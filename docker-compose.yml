@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: guess_game_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: guess_number_game
+      MYSQL_USER: game_user
+      MYSQL_PASSWORD: game_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - game_network
+
+  backend:
+    build: ./backend
+    container_name: guess_game_backend
+    environment:
+      DB_HOST: mysql
+      DB_USER: game_user
+      DB_PASSWORD: game_password
+      DB_NAME: guess_number_game
+      SECRET_KEY: your_super_secret_key_change_this
+      MM_TEST_MODE: "True"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mysql
+    networks:
+      - game_network
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: guess_game_phpmyadmin
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+    ports:
+      - "8080:80"
+    depends_on:
+      - mysql
+    networks:
+      - game_network
+
+volumes:
+  mysql_data:
+
+networks:
+  game_network:
+    driver: bridge
