@@ -12,9 +12,10 @@ from .database import init_database, get_db_connection, close_db_connections
 from .auth import verify_password, get_password_hash, create_access_token, decode_token
 from .websocket_manager import manager
 from .game_logic import determine_game_winner
-from .mobile_money import mm_api
 from .schemas import *
 import mysql.connector
+import secrets
+import httpx
 
 
 # Configure logging
@@ -164,42 +165,115 @@ async def verify_token(current_user: dict = Depends(get_current_user)):
         "balance": current_user['balance']
     }
 
-# Mobile Money endpoints
-@app.post("/api/mobile-money/withdraw")
-async def mobile_money_withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
+# DEPOSIT VIA FEEXPAY (webhook callback)
+@app.post("/api/feexpay/webhook")
+async def feexpay_webhook(request: Request):
+    """Webhook called by FeexPay after payment confirmation"""
+    try:
+        data = await request.json()
+        logger.info(f"FeexPay webhook received: {data}")
+        
+        transaction_id = data.get('transaction_id')
+        amount = data.get('amount')
+        user_id = data.get('user_id')
+        status = data.get('status')
+        
+        if status == 'success' and user_id and amount:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Check if already processed
+            cursor.execute("SELECT id FROM transactions WHERE reference = %s", (transaction_id,))
+            if cursor.fetchone():
+                return {"status": "already_processed"}
+            
+            # Credit user balance
+            cursor.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (amount, user_id))
+            
+            # Record transaction
+            cursor.execute("""
+                INSERT INTO transactions (user_id, amount, type, reference, status)
+                VALUES (%s, %s, 'deposit', %s, 'completed')
+            """, (user_id, amount, transaction_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Deposit confirmed: User {user_id}, Amount {amount}")
+            return {"status": "success"}
+        
+        return {"status": "ignored"}
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return JSONResponse(status_code=500, content={"status": "error"})
+
+# Initiate FeexPay payment (frontend will call FeexPay SDK directly)
+@app.post("/api/deposit/initiate")
+async def initiate_deposit(deposit: MobileMoneyDeposit, current_user: dict = Depends(get_current_user)):
+    """Create a pending deposit record before FeexPay payment"""
+    if deposit.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    
+    if deposit.amount < 1000:
+        raise HTTPException(status_code=400, detail="Minimum deposit is 1000 XOF")
+    
+    transaction_id = f"DEP_{int(datetime.now().timestamp())}_{current_user['id']}"
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO transactions (user_id, amount, type, reference, status)
+        VALUES (%s, %s, 'deposit_pending', %s, 'pending')
+    """, (current_user['id'], deposit.amount, transaction_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {
+        "success": True,
+        "transaction_id": transaction_id,
+        "amount": deposit.amount,
+        "user_id": current_user['id']
+    }
+
+# Withdrawal (keep for withdrawals)
+@app.post("/api/withdraw")
+async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
     if withdraw.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
     
-    if withdraw.amount < 5:
-        raise HTTPException(status_code=400, detail="Minimum withdrawal is $5")
+    if withdraw.amount < 1000:
+        raise HTTPException(status_code=400, detail="Minimum withdrawal is 1000 XOF")
     
     if float(current_user['balance']) < withdraw.amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
     
-    try:
-        result = await mm_api.initiate_withdrawal(current_user['id'], withdraw.phone_number, withdraw.amount)
-        
-        if result['success']:
-            logger.info(f"Withdrawal initiated: User {current_user['id']}, Amount ${withdraw.amount}")
-            return result
-        else:
-            raise HTTPException(status_code=400, detail=result['message'])
-    except Exception as e:
-        logger.error(f"Mobile money withdrawal error: {e}")
-        raise HTTPException(status_code=500, detail="Withdrawal failed")
-
-@app.get("/api/mobile-money/withdrawal-status/{transaction_id}")
-async def check_withdrawal_status(transaction_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        status = await mm_api.check_withdrawal_status(transaction_id)
-        if not status:
-            raise HTTPException(status_code=404, detail="Transaction not found")
-        return status
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Check withdrawal status error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to check status")
+    transaction_id = f"WDR_{int(datetime.now().timestamp())}_{current_user['id']}"
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Deduct balance
+    cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s", (withdraw.amount, current_user['id']))
+    
+    # Record transaction
+    cursor.execute("""
+        INSERT INTO transactions (user_id, amount, type, reference, status)
+        VALUES (%s, %s, 'withdrawal', %s, 'completed')
+    """, (current_user['id'], -withdraw.amount, transaction_id))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    logger.info(f"Withdrawal: User {current_user['id']}, Amount {withdraw.amount}")
+    
+    return {
+        "success": True,
+        "transaction_id": transaction_id,
+        "message": "Withdrawal processed successfully"
+    }
 
 # Transaction history
 @app.get("/api/user/transactions")
@@ -440,14 +514,12 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         
         logger.info(f"User {current_user['id']} joined game {join_data.game_id}")
         
-        # Start timer if enough players (minimum 2)
         if participant_count >= 2:
             cursor = conn.cursor(dictionary=True)
             cursor.execute("UPDATE games SET status = 'active' WHERE id = %s", 
                           (join_data.game_id,))
             conn.commit()
             
-            # Start 30 second timer
             asyncio.create_task(start_game_timer(join_data.game_id))
         
         return {"message": "Joined game successfully"}
@@ -467,7 +539,6 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
 async def start_game_timer(game_id: int):
     """30 second timer before game ends, broadcasts countdown"""
     try:
-        # Broadcast timer for 30 seconds
         for i in range(30, 0, -1):
             logger.info(f"Game {game_id} ends in {i} seconds...")
             await manager.broadcast_to_game(game_id, {
@@ -476,7 +547,6 @@ async def start_game_timer(game_id: int):
             })
             await asyncio.sleep(1)
         
-        # Determine winner
         result = determine_game_winner(game_id)
         
         if result:
@@ -484,7 +554,6 @@ async def start_game_timer(game_id: int):
             winner_amount = result['winner_amount']
             winning_number = result['winning_number']
             
-            # Get all participants to know who lost
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute("""
@@ -498,7 +567,6 @@ async def start_game_timer(game_id: int):
             
             logger.info(f"Game {game_id} finished. Winner: {winner_id}, Amount: {winner_amount}")
             
-            # Broadcast to ALL participants (winner and losers)
             await manager.broadcast_to_game(game_id, {
                 'type': 'game_ended',
                 'winning_number': winning_number,
@@ -587,40 +655,6 @@ async def get_game_details(game_id: int):
             cursor.close()
         if conn:
             conn.close()
-
-# Mobile Money endpoints
-@app.post("/api/mobile-money/deposit")
-async def mobile_money_deposit(deposit: MobileMoneyDeposit, current_user: dict = Depends(get_current_user)):
-    if deposit.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive")
-    
-    if deposit.amount < 5:
-        raise HTTPException(status_code=400, detail="Minimum deposit is $5")
-    
-    try:
-        result = await mm_api.initiate_deposit(current_user['id'], deposit.phone_number, deposit.amount)
-        
-        if result['success']:
-            logger.info(f"Deposit initiated: User {current_user['id']}, Amount ${deposit.amount}")
-            return result
-        else:
-            raise HTTPException(status_code=400, detail=result['message'])
-    except Exception as e:
-        logger.error(f"Mobile money deposit error: {e}")
-        raise HTTPException(status_code=500, detail="Deposit failed")
-
-@app.get("/api/mobile-money/status/{transaction_id}")
-async def check_deposit_status(transaction_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        status = await mm_api.check_deposit_status(transaction_id)
-        if not status:
-            raise HTTPException(status_code=404, detail="Transaction not found")
-        return status
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Check deposit status error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to check status")
 
 # WebSocket endpoint
 @app.websocket("/ws/{game_id}/{token}")
