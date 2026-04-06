@@ -593,7 +593,10 @@ async def get_available_games(current_user: dict = Depends(get_current_user)):
         cursor.execute("""
             SELECT g.*, 
                    COUNT(gp.id) as participants_count,
-                   COALESCE(u.username, 'Unknown') as creator_name
+                   CASE 
+                       WHEN u.id = 1 THEN '🤖 Bot'
+                       ELSE COALESCE(u.username, 'Unknown')
+                   END as creator_name
             FROM games g
             LEFT JOIN game_participants gp ON g.id = gp.game_id
             LEFT JOIN users u ON g.creator_id = u.id
