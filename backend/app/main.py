@@ -6,7 +6,8 @@ from fastapi import Request
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 from .database import init_database, get_db_connection, close_db_connections
 from .auth import verify_password, get_password_hash, create_access_token, decode_token
 from .websocket_manager import manager
@@ -19,6 +20,21 @@ import mysql.connector
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def serialize_for_json(obj):
+    """Recursively convert non-serializable types in a dict/list."""
+    if isinstance(obj, dict):
+        return {k: serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serialize_for_json(i) for i in obj]
+    elif isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, Decimal):
+        return float(obj)
+    else:
+        return obj
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -464,12 +480,31 @@ async def start_game_timer(game_id: int):
         result = determine_game_winner(game_id)
         
         if result:
-            logger.info(f"Game {game_id} finished. Winner: {result['winner_id']}, Amount: {result['winner_amount']}")
+            winner_id = result['winner_id']
+            winner_amount = result['winner_amount']
+            winning_number = result['winning_number']
+            
+            # Get all participants to know who lost
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT user_id FROM game_participants WHERE game_id = %s
+            """, (game_id,))
+            participants = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            loser_ids = [p['user_id'] for p in participants if p['user_id'] != winner_id]
+            
+            logger.info(f"Game {game_id} finished. Winner: {winner_id}, Amount: {winner_amount}")
+            
+            # Broadcast to ALL participants (winner and losers)
             await manager.broadcast_to_game(game_id, {
                 'type': 'game_ended',
-                'winning_number': result['winning_number'],
-                'winner_id': result['winner_id'],
-                'winner_amount': float(result['winner_amount'])
+                'winning_number': winning_number,
+                'winner_id': winner_id,
+                'winner_amount': float(winner_amount),
+                'loser_ids': loser_ids
             })
     except Exception as e:
         logger.error(f"Error in game timer for game {game_id}: {e}")
@@ -636,10 +671,7 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
         conn.close()
         
         if game_state:
-            if 'bet_amount' in game_state and game_state['bet_amount']:
-                game_state['bet_amount'] = float(game_state['bet_amount'])
-            if 'total_pot' in game_state and game_state['total_pot']:
-                game_state['total_pot'] = float(game_state['total_pot'])
+            game_state = serialize_for_json(game_state)
         
         await websocket.send_json({
             'type': 'game_state',
