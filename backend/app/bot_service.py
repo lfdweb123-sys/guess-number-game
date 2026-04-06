@@ -193,81 +193,129 @@ def bot_join_game(game_id: int, bet_amount: float) -> bool:
 async def run_bot_game_cycle(game_id: int, bet_amount: float):
     """
     Cycle complet d'une partie bot :
-    - Attend 25s que des joueurs rejoignent
-    - Si personne n'a rejoint → annule la partie et rembourse
-    - Si un joueur a rejoint → le bot rejoint, démarre le timer, résout
+    - Attend que des joueurs rejoignent (max 25s)
+    - Si personne n'a rejoint → annule et rembourse
+    - Si un joueur a rejoint → bot rejoint, timer, résolution
     """
     from .game_logic import determine_game_winner_with_bot
 
     logger.info(f"[BOT] Cycle démarré pour partie #{game_id}")
 
-    # Attendre que des joueurs puissent rejoindre
-    await asyncio.sleep(25)
+    # ✅ Vérification périodique au lieu d'un seul sleep de 25s
+    max_wait_seconds = 25
+    check_interval = 2  # Vérifier toutes les 2 secondes
+    waited = 0
 
-    conn = None
-    cursor = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+    while waited < max_wait_seconds:
+        await asyncio.sleep(check_interval)
+        waited += check_interval
 
-        cursor.execute(
-            "SELECT COUNT(*) as cnt FROM game_participants WHERE game_id = %s",
-            (game_id,)
-        )
-        row = cursor.fetchone()
-        participant_count = row['cnt'] if row else 0
-        cursor.close()
-        conn.close()
-
-        if participant_count == 0:
-            # Personne n'a rejoint → annuler et rembourser le bot
-            _cancel_bot_game(game_id, bet_amount)
-            logger.info(f"[BOT] Partie #{game_id} annulée (aucun joueur)")
-            return
-
-        # Un ou plusieurs joueurs ont rejoint : le bot rejoint maintenant
-        joined = bot_join_game(game_id, bet_amount)
-        if not joined:
-            logger.warning(f"[BOT] Impossible de rejoindre la partie #{game_id}")
-            return
-
-        # Broadcaster aux joueurs connectés que la partie est active
-        await manager.broadcast_to_game(game_id, {
-            'type': 'game_state_update',
-            'status': 'active',
-            'message': 'Un adversaire a rejoint ! La partie commence…'
-        })
-
-        # Timer de 30 secondes avec countdown
-        for i in range(30, 0, -1):
-            await manager.broadcast_to_game(game_id, {
-                'type': 'timer',
-                'seconds': i
-            })
-            await asyncio.sleep(1)
-
-        # Résolution avec logique bot (la plateforme gagne toujours)
-        result = determine_game_winner_with_bot(game_id)
-
-        if result:
-            # Notifier tous les participants individuellement
-            await _notify_game_result(game_id, result)
-
-            logger.info(
-                f"[BOT] Partie #{game_id} terminée — "
-                f"gagnant: {result['winner_id']}, numéro: {result['winning_number']}"
-            )
-
-    except Exception as e:
-        logger.error(f"[BOT] Erreur cycle partie #{game_id}: {e}")
-    finally:
-        if cursor and not cursor.connection.is_connected():
-            pass
+        conn = None
+        cursor = None
         try:
-            if conn and conn.is_connected():
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            # Vérifier si la partie existe encore et son statut
+            cursor.execute(
+                "SELECT status FROM games WHERE id = %s",
+                (game_id,)
+            )
+            game_row = cursor.fetchone()
+            
+            if not game_row:
+                logger.warning(f"[BOT] Partie #{game_id} n'existe plus")
+                return
+            
+            if game_row['status'] == 'cancelled':
+                logger.info(f"[BOT] Partie #{game_id} déjà annulée")
+                return
+            
+            if game_row['status'] == 'active':
+                # Quelqu'un a rejoint et a démarré la partie
+                logger.info(f"[BOT] Partie #{game_id} déjà active, bot va rejoindre")
+                cursor.close()
                 conn.close()
-        except Exception:
-            pass
+                
+                joined = bot_join_game(game_id, bet_amount)
+                if joined:
+                    await manager.broadcast_to_game(game_id, {
+                        'type': 'game_state_update',
+                        'status': 'active',
+                        'message': 'Un adversaire a rejoint ! La partie commence…'
+                    })
+                    # Timer de 30 secondes
+                    for i in range(30, 0, -1):
+                        await manager.broadcast_to_game(game_id, {
+                            'type': 'timer',
+                            'seconds': i
+                        })
+                        await asyncio.sleep(1)
+                    
+                    result = determine_game_winner_with_bot(game_id)
+                    if result:
+                        await _notify_game_result(game_id, result)
+                        logger.info(
+                            f"[BOT] Partie #{game_id} terminée — "
+                            f"gagnant: {result['winner_id']}, numéro: {result['winning_number']}"
+                        )
+                return
+
+            # Vérifier combien de participants
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM game_participants WHERE game_id = %s",
+                (game_id,)
+            )
+            row = cursor.fetchone()
+            participant_count = row['cnt'] if row else 0
+
+            if participant_count > 0:
+                # ✅ Des joueurs ont rejoint ! Le bot rejoint maintenant
+                logger.info(f"[BOT] {participant_count} joueur(s) ont rejoint la partie #{game_id}")
+                cursor.close()
+                conn.close()
+                
+                joined = bot_join_game(game_id, bet_amount)
+                if not joined:
+                    logger.warning(f"[BOT] Impossible de rejoindre la partie #{game_id}")
+                    return
+
+                await manager.broadcast_to_game(game_id, {
+                    'type': 'game_state_update',
+                    'status': 'active',
+                    'message': 'Un adversaire a rejoint ! La partie commence…'
+                })
+
+                # Timer de 30 secondes avec countdown
+                for i in range(30, 0, -1):
+                    await manager.broadcast_to_game(game_id, {
+                        'type': 'timer',
+                        'seconds': i
+                    })
+                    await asyncio.sleep(1)
+
+                # Résolution avec logique bot
+                result = determine_game_winner_with_bot(game_id)
+
+                if result:
+                    await _notify_game_result(game_id, result)
+                    logger.info(
+                        f"[BOT] Partie #{game_id} terminée — "
+                        f"gagnant: {result['winner_id']}, numéro: {result['winning_number']}"
+                    )
+                return
+
+        except Exception as e:
+            logger.error(f"[BOT] Erreur vérification partie #{game_id}: {e}")
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    # ✅ Si on arrive ici, personne n'a rejoint après 25s → annuler
+    logger.info(f"[BOT] Partie #{game_id} annulée (aucun joueur après {max_wait_seconds}s)")
+    _cancel_bot_game(game_id, bet_amount)
 
 
 def _cancel_bot_game(game_id: int, bet_amount: float):
@@ -287,6 +335,7 @@ def _cancel_bot_game(game_id: int, bet_amount: float):
             (bet_amount, PLATFORM_USER_ID)
         )
         conn.commit()
+        logger.info(f"[BOT] Partie #{game_id} annulée, remboursement de {bet_amount} XOF")
     except Exception as e:
         logger.error(f"[BOT] Erreur _cancel_bot_game: {e}")
         if conn:
