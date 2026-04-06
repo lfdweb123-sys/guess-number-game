@@ -75,11 +75,11 @@ def determine_game_winner(game_id: int):
             VALUES (%s, %s, 'win', %s, 'completed')
         """, (winner_id, winner_amount, f"game_{game_id}_win"))
         
-        # Record commission transaction (site revenue)
+        # Record commission transaction (user_id = 1 pour l'admin)
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'commission', %s, 'completed')
-        """, (0, commission, f"game_{game_id}_commission"))
+        """, (1, commission, f"game_{game_id}_commission"))
         
         conn.commit()
         
