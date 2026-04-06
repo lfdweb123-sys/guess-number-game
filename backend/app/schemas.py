@@ -52,3 +52,8 @@ class TransactionResponse(BaseModel):
 class WebSocketMessage(BaseModel):
     type: str
     data: dict
+
+
+class MobileMoneyWithdraw(BaseModel):
+    phone_number: str
+    amount: float

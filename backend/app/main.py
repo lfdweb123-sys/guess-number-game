@@ -161,6 +161,44 @@ async def verify_token(current_user: dict = Depends(get_current_user)):
     }
 
 
+# Ajouter après les endpoints de dépôt
+@app.post("/api/mobile-money/withdraw")
+async def mobile_money_withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
+    if withdraw.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    
+    if withdraw.amount < 5:
+        raise HTTPException(status_code=400, detail="Minimum withdrawal is $5")
+    
+    if float(current_user['balance']) < withdraw.amount:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+    
+    try:
+        result = await mm_api.initiate_withdrawal(current_user['id'], withdraw.phone_number, withdraw.amount)
+        
+        if result['success']:
+            logger.info(f"Withdrawal initiated: User {current_user['id']}, Amount ${withdraw.amount}")
+            return result
+        else:
+            raise HTTPException(status_code=400, detail=result['message'])
+    except Exception as e:
+        logger.error(f"Mobile money withdrawal error: {e}")
+        raise HTTPException(status_code=500, detail="Withdrawal failed")
+
+@app.get("/api/mobile-money/withdrawal-status/{transaction_id}")
+async def check_withdrawal_status(transaction_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        status = await mm_api.check_withdrawal_status(transaction_id)
+        if not status:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        return status
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Check withdrawal status error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to check status")
+
+
 # User endpoints
 @app.post("/api/register")
 async def register(user_data: UserCreate):

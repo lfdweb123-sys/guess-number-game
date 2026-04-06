@@ -5,6 +5,7 @@ import '../providers/game_provider.dart';
 import 'create_game_screen.dart';
 import 'game_detail_screen.dart';
 import 'deposit_screen.dart';
+import 'withdraw_screen.dart'; // AJOUTÉ
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -44,14 +45,27 @@ class _HomeScreenState extends State<HomeScreen> {
                       fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(width: 8),
+                // Bouton DEPOSIT (vert)
                 IconButton(
-                  icon: const Icon(Icons.add_circle),
+                  icon: const Icon(Icons.add_circle, color: Colors.green),
                   onPressed: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const DepositScreen()),
                     ).then((_) => authProvider.loadBalance());
                   },
+                  tooltip: 'Deposit',
+                ),
+                // Bouton WITHDRAW (orange)
+                IconButton(
+                  icon: const Icon(Icons.remove_circle, color: Colors.orange),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const WithdrawScreen()),
+                    ).then((_) => authProvider.loadBalance());
+                  },
+                  tooltip: 'Withdraw',
                 ),
               ],
             ),

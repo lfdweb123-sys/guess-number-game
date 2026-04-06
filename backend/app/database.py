@@ -179,6 +179,24 @@ def init_database():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         logger.info("Game participants table ready")
+
+        # Dans init_database(), ajoute :
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mobile_money_withdrawals (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                phone_number VARCHAR(20) NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                transaction_id VARCHAR(100) UNIQUE,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user (user_id),
+                INDEX idx_status (status),
+                INDEX idx_transaction (transaction_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
         
         # Transactions table
         cursor.execute("""

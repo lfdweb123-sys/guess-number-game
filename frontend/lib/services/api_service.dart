@@ -98,6 +98,17 @@ class ApiService {
     return json.decode(response.body);
   }
 
+  static Future<Map<String, dynamic>> mobileMoneyWithdraw(
+      String phoneNumber, double amount) async {
+    final headers = await _getHeaders();
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/mobile-money/withdraw'),
+      headers: headers,
+      body: json.encode({'phone_number': phoneNumber, 'amount': amount}),
+    );
+    return json.decode(response.body);
+  }
+
   static Future<Map<String, dynamic>> mobileMoneyDeposit(
       String phoneNumber, double amount) async {
     final headers = await _getHeaders();
