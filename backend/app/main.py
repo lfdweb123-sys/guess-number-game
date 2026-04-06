@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List, Optional
+from fastapi import Request
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from .game_logic import determine_game_winner
 from .mobile_money import mm_api
 from .schemas import *
 import mysql.connector
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -101,13 +103,27 @@ async def health_check():
         )
 
 # Authentication dependency with better error handling
-async def get_current_user(token: str = Depends(lambda: None)):
-    if token is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def get_current_user(request: Request):
+    """
+    Récupère l'utilisateur courant à partir du token JWT dans le header Authorization
+    """
+    # Récupérer le header Authorization
+    auth_header = request.headers.get('Authorization')
     
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Not authenticated - No Authorization header")
+    
+    # Vérifier le format "Bearer <token>"
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization header format. Use 'Bearer <token>'")
+    
+    token = parts[1]
+    
+    # Décoder le token
     payload = decode_token(token)
     if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     
     conn = None
     cursor = None
@@ -120,6 +136,7 @@ async def get_current_user(token: str = Depends(lambda: None)):
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
+        # Retirer le mot de passe
         user.pop('password_hash', None)
         return user
     except Exception as e:
@@ -130,6 +147,19 @@ async def get_current_user(token: str = Depends(lambda: None)):
             cursor.close()
         if conn:
             conn.close()
+
+
+
+@app.get("/api/verify-token")
+async def verify_token(current_user: dict = Depends(get_current_user)):
+    """Vérifie si le token est valide"""
+    return {
+        "valid": True, 
+        "user_id": current_user['id'], 
+        "username": current_user['username'],
+        "balance": current_user['balance']
+    }
+
 
 # User endpoints
 @app.post("/api/register")
