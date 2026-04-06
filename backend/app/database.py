@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 db_config = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', ''),
-    'database': os.getenv('DB_NAME', 'guess_number_game'),
+    'host': os.getenv('MYSQLHOST'),
+    'port': int(os.getenv('MYSQLPORT', 3306)),
+    'user': os.getenv('MYSQLUSER'),
+    'password': os.getenv('MYSQLPASSWORD'),
+    'database': os.getenv('MYSQLDATABASE'),
     'pool_name': 'mypool',
     'pool_size': 10
 }
