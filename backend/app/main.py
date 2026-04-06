@@ -317,9 +317,9 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
     
     cursor.execute("""
         SELECT 
-            COUNT(*) as total_games,
-            SUM(CASE WHEN winner_id = %s THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN winner_id = %s THEN amount ELSE 0 END) as total_won
+            COUNT(DISTINCT gp.game_id) as total_games,
+            SUM(CASE WHEN g.winner_id = %s THEN 1 ELSE 0 END) as wins,
+            COALESCE(SUM(CASE WHEN g.winner_id = %s THEN g.total_pot * 0.75 ELSE 0 END), 0) as total_won
         FROM game_participants gp
         JOIN games g ON gp.game_id = g.id
         WHERE gp.user_id = %s
@@ -329,7 +329,13 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
     cursor.close()
     conn.close()
     
-    return stats
+    # Assurer que les valeurs sont des nombres
+    return {
+        "total_games": stats['total_games'] or 0,
+        "wins": stats['wins'] or 0,
+        "total_won": float(stats['total_won']) if stats['total_won'] else 0.0,
+        "win_rate": (stats['wins'] / stats['total_games'] * 100) if stats['total_games'] and stats['total_games'] > 0 else 0.0
+    }
 
 # Leaderboard
 @app.get("/api/leaderboard")
