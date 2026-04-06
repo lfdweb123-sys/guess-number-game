@@ -251,6 +251,22 @@ def init_database():
         except Exception as e:
             logger.info(f"Index idx_participants_game_user already exists or error: {e}")
         
+        # Seed initial data from SQL file
+        sql_file_path = os.path.join(os.path.dirname(__file__), '..', 'init_db.sql')
+        try:
+            with open(sql_file_path, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+            # Execute each non-empty, non-comment statement
+            for statement in sql_content.split(';'):
+                statement = statement.strip()
+                if statement and not statement.startswith('--'):
+                    cursor.execute(statement)
+            logger.info("Database seed from init_db.sql completed")
+        except FileNotFoundError:
+            logger.warning(f"init_db.sql not found at {sql_file_path}, skipping seed")
+        except Exception as e:
+            logger.warning(f"Error executing init_db.sql: {e}")
+
         conn.commit()
         logger.info("Database initialization completed successfully")
         
