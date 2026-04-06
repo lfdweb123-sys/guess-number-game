@@ -2,11 +2,11 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/game.dart';
+import '../config/api_config.dart';
 
 class ApiService {
-  static const String baseUrl =
-      'YOUR_RAILWAY_URL'; // Will be replaced during deployment
-  static const String wsBaseUrl = 'YOUR_RAILWAY_WS_URL';
+  static String get baseUrl => ApiConfig.baseUrl;
+  static String get wsBaseUrl => ApiConfig.wsUrl;
 
   static Future<Map<String, String>> _getHeaders() async {
     final prefs = await SharedPreferences.getInstance();
@@ -19,22 +19,36 @@ class ApiService {
 
   static Future<Map<String, dynamic>> register(
       String username, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/register'),
-      body: json.encode({'username': username, 'password': password}),
-      headers: {'Content-Type': 'application/json'},
-    );
-    return json.decode(response.body);
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/register'),
+        body: json.encode({'username': username, 'password': password}),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      print('Register response: ${response.statusCode} - ${response.body}');
+      return json.decode(response.body);
+    } catch (e) {
+      print('Register error: $e');
+      return {'error': e.toString()};
+    }
   }
 
   static Future<Map<String, dynamic>> login(
       String username, String password) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/api/login'),
-      body: json.encode({'username': username, 'password': password}),
-      headers: {'Content-Type': 'application/json'},
-    );
-    return json.decode(response.body);
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/login'),
+        body: json.encode({'username': username, 'password': password}),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      print('Login response: ${response.statusCode} - ${response.body}');
+      return json.decode(response.body);
+    } catch (e) {
+      print('Login error: $e');
+      return {'error': e.toString()};
+    }
   }
 
   static Future<Map<String, dynamic>> getUserBalance() async {

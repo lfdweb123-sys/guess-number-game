@@ -32,7 +32,9 @@ class MyApp extends StatelessWidget {
           primarySwatch: Colors.blue,
           useMaterial3: true,
         ),
-        home: initialToken != null ? const HomeScreen() : const LoginScreen(),
+        home: initialToken != null && initialToken!.isNotEmpty
+            ? HomeScreen()
+            : LoginScreen(),
         debugShowCheckedModeBanner: false,
       ),
     );

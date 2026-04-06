@@ -1,0 +1,1 @@
+ C:\\Users\\PADDSA\\Desktop\\guess-number-game\\frontend\\build\\web\\manifest.json:  C:\\Users\\PADDSA\\Desktop\\guess-number-game\\frontend\\web\\index.html C:\\Users\\PADDSA\\Desktop\\guess-number-game\\frontend\\web\\manifest.json

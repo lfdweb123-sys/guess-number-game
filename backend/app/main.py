@@ -5,6 +5,7 @@ from typing import List, Optional
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 from .database import init_database, get_db_connection, close_db_connections
 from .auth import verify_password, get_password_hash, create_access_token, decode_token
 from .websocket_manager import manager
@@ -36,10 +37,17 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS for Flutter web
+# CORS for Flutter web - CORRECTED
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly in production
+    allow_origins=[
+        "https://guessnumbergame-6f0ff.web.app",
+        "https://guessnumbergame-6f0ff.firebaseapp.com",
+        "https://guess-number-game-production.up.railway.app",
+        "http://localhost:3000",
+        "http://localhost:5000",
+        "http://localhost:8000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,7 +103,6 @@ async def health_check():
 # Authentication dependency with better error handling
 async def get_current_user(token: str = Depends(lambda: None)):
     if token is None:
-        # Try to get from Authorization header (will be handled by middleware)
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     payload = decode_token(token)
@@ -113,7 +120,6 @@ async def get_current_user(token: str = Depends(lambda: None)):
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
-        # Remove password hash from response
         user.pop('password_hash', None)
         return user
     except Exception as e:
@@ -125,15 +131,6 @@ async def get_current_user(token: str = Depends(lambda: None)):
         if conn:
             conn.close()
 
-# Helper to get token from header (used in WebSocket)
-async def get_token_from_header(authorization: str = None):
-    if not authorization:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer":
-        return None
-    return token
-
 # User endpoints
 @app.post("/api/register")
 async def register(user_data: UserCreate):
@@ -143,12 +140,10 @@ async def register(user_data: UserCreate):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Check if user exists
         cursor.execute("SELECT id FROM users WHERE username = %s", (user_data.username,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Username already exists")
         
-        # Create user
         password_hash = get_password_hash(user_data.password)
         cursor.execute(
             "INSERT INTO users (username, password_hash, balance) VALUES (%s, %s, 0)",
@@ -226,11 +221,9 @@ async def create_game(game_data: GameCreate, current_user: dict = Depends(get_cu
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Deduct bet amount
         cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s", 
                        (game_data.bet_amount, current_user['id']))
         
-        # Create game
         cursor.execute("""
             INSERT INTO games (creator_id, bet_amount, total_pot, status)
             VALUES (%s, %s, %s, 'waiting')
@@ -238,7 +231,6 @@ async def create_game(game_data: GameCreate, current_user: dict = Depends(get_cu
         
         game_id = cursor.lastrowid
         
-        # Record transaction
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'bet', %s, 'completed')
@@ -271,7 +263,6 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Get game details with lock for race condition
         cursor.execute("SELECT * FROM games WHERE id = %s AND status = 'waiting' FOR UPDATE", 
                       (join_data.game_id,))
         game = cursor.fetchone()
@@ -282,34 +273,28 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         if float(current_user['balance']) < float(game['bet_amount']):
             raise HTTPException(status_code=400, detail="Insufficient balance")
         
-        # Check if already joined
         cursor.execute("SELECT id FROM game_participants WHERE game_id = %s AND user_id = %s",
                        (join_data.game_id, current_user['id']))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Already joined this game")
         
-        # Deduct bet amount
         cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s",
                        (float(game['bet_amount']), current_user['id']))
         
-        # Add participant
         cursor.execute("""
             INSERT INTO game_participants (game_id, user_id, guessed_number)
             VALUES (%s, %s, %s)
         """, (join_data.game_id, current_user['id'], join_data.guessed_number))
         
-        # Update game pot
         cursor.execute("""
             UPDATE games SET total_pot = total_pot + %s WHERE id = %s
         """, (float(game['bet_amount']), join_data.game_id))
         
-        # Record transaction
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'bet', %s, 'completed')
         """, (current_user['id'], float(game['bet_amount']), f"game_{join_data.game_id}_bet"))
         
-        # Get participant count
         cursor.execute("SELECT COUNT(*) as count FROM game_participants WHERE game_id = %s", 
                       (join_data.game_id,))
         participant_count = cursor.fetchone()['count']
@@ -318,14 +303,12 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         
         logger.info(f"User {current_user['id']} joined game {join_data.game_id}")
         
-        # Start game if enough players (minimum 2)
         if participant_count >= 2:
-            cursor = conn.cursor(dictionary=True)  # New cursor for new query
+            cursor = conn.cursor(dictionary=True)
             cursor.execute("UPDATE games SET status = 'active' WHERE id = %s", 
                           (join_data.game_id,))
             conn.commit()
             
-            # Determine winner in background (don't await to avoid blocking)
             asyncio.create_task(process_game_winner(join_data.game_id))
         
         return {"message": "Joined game successfully"}
@@ -343,14 +326,12 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
             conn.close()
 
 async def process_game_winner(game_id: int):
-    """Process game winner in background"""
     try:
-        await asyncio.sleep(1)  # Small delay to ensure all data is committed
+        await asyncio.sleep(1)
         result = determine_game_winner(game_id)
         
         if result:
             logger.info(f"Game {game_id} finished. Winner: {result['winner_id']}, Amount: {result['winner_amount']}")
-            # Broadcast result to all participants via WebSocket
             await manager.broadcast_to_game(game_id, {
                 'type': 'game_ended',
                 'winning_number': result['winning_number'],
@@ -382,7 +363,6 @@ async def get_available_games(current_user: dict = Depends(get_current_user)):
         
         games = cursor.fetchall()
         
-        # Convert Decimal to float for JSON serialization
         for game in games:
             if 'bet_amount' in game:
                 game['bet_amount'] = float(game['bet_amount'])
@@ -423,7 +403,6 @@ async def get_game_details(game_id: int):
         if not game:
             raise HTTPException(status_code=404, detail="Game not found")
         
-        # Convert Decimal to float
         if 'bet_amount' in game and game['bet_amount']:
             game['bet_amount'] = float(game['bet_amount'])
         if 'total_pot' in game and game['total_pot']:
@@ -475,10 +454,9 @@ async def check_deposit_status(transaction_id: str, current_user: dict = Depends
         logger.error(f"Check deposit status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to check status")
 
-# WebSocket endpoint with improved error handling
+# WebSocket endpoint
 @app.websocket("/ws/{game_id}/{token}")
 async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
-    # Verify user
     try:
         payload = decode_token(token)
         if not payload:
@@ -506,7 +484,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
     await manager.connect(game_id, websocket)
     
     try:
-        # Send initial game state
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
@@ -526,7 +503,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
         conn.close()
         
         if game_state:
-            # Convert Decimal to float
             if 'bet_amount' in game_state and game_state['bet_amount']:
                 game_state['bet_amount'] = float(game_state['bet_amount'])
             if 'total_pot' in game_state and game_state['total_pot']:
@@ -537,16 +513,12 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
             'data': game_state
         })
         
-        # Keep connection alive
         while True:
             try:
-                # Set timeout to detect disconnections
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                # Handle ping/pong if needed
                 if data == "ping":
                     await websocket.send_text("pong")
             except asyncio.TimeoutError:
-                # Send heartbeat to keep connection alive
                 await websocket.send_json({'type': 'heartbeat'})
             except WebSocketDisconnect:
                 break
