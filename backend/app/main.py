@@ -13,6 +13,7 @@ from .auth import verify_password, get_password_hash, create_access_token, decod
 from .websocket_manager import manager
 from .game_logic import determine_game_winner
 from .schemas import *
+from .bot_service import bot_scheduler, ensure_platform_user
 import mysql.connector
 import secrets
 import httpx
@@ -43,8 +44,22 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up...")
     init_database()
     logger.info("Database initialized")
+
+    # Créer le compte plateforme si absent
+    ensure_platform_user()
+
+    # Démarrer le scheduler de parties automatiques
+    bot_task = asyncio.create_task(bot_scheduler())
+    logger.info("Bot scheduler démarré")
+
     yield
+
     # Shutdown
+    bot_task.cancel()
+    try:
+        await bot_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Shutting down...")
     close_db_connections()
     logger.info("Database connections closed")
@@ -537,45 +552,29 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
             conn.close()
 
 async def start_game_timer(game_id: int):
-    """30 second timer before game ends, broadcasts countdown"""
+    """Timer 30s pour les parties entre vrais joueurs."""
+    from .bot_service import _notify_game_result
+
     try:
         for i in range(30, 0, -1):
-            logger.info(f"Game {game_id} ends in {i} seconds...")
+            logger.info(f"Partie {game_id} — fin dans {i}s")
             await manager.broadcast_to_game(game_id, {
                 'type': 'timer',
                 'seconds': i
             })
             await asyncio.sleep(1)
-        
+
         result = determine_game_winner(game_id)
-        
+
         if result:
-            winner_id = result['winner_id']
-            winner_amount = result['winner_amount']
-            winning_number = result['winning_number']
-            
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("""
-                SELECT user_id FROM game_participants WHERE game_id = %s
-            """, (game_id,))
-            participants = cursor.fetchall()
-            cursor.close()
-            conn.close()
-            
-            loser_ids = [p['user_id'] for p in participants if p['user_id'] != winner_id]
-            
-            logger.info(f"Game {game_id} finished. Winner: {winner_id}, Amount: {winner_amount}")
-            
-            await manager.broadcast_to_game(game_id, {
-                'type': 'game_ended',
-                'winning_number': winning_number,
-                'winner_id': winner_id,
-                'winner_amount': float(winner_amount),
-                'loser_ids': loser_ids
-            })
+            # Notifications enrichies cross-screen
+            await _notify_game_result(game_id, result)
+            logger.info(
+                f"Partie {game_id} terminée — "
+                f"gagnant: {result['winner_id']}, numéro: {result['winning_number']}"
+            )
     except Exception as e:
-        logger.error(f"Error in game timer for game {game_id}: {e}")
+        logger.error(f"Erreur timer partie {game_id}: {e}")
 
 @app.get("/api/games/available")
 async def get_available_games(current_user: dict = Depends(get_current_user)):
@@ -659,38 +658,40 @@ async def get_game_details(game_id: int):
 # WebSocket endpoint
 @app.websocket("/ws/{game_id}/{token}")
 async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
+    user = None
     try:
         payload = decode_token(token)
         if not payload:
-            await websocket.close(code=1008, reason="Invalid token")
+            await websocket.close(code=1008, reason="Token invalide")
             return
-        
+
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM users WHERE id = %s", (payload.get('user_id'),))
         user = cursor.fetchone()
         cursor.close()
         conn.close()
-        
+
         if not user:
-            await websocket.close(code=1008, reason="User not found")
+            await websocket.close(code=1008, reason="Utilisateur introuvable")
             return
-        
-        logger.info(f"WebSocket connected: User {user['id']} to game {game_id}")
-        
+
+        logger.info(f"WS connecté: user {user['id']} → partie {game_id}")
+
     except Exception as e:
-        logger.error(f"WebSocket auth error: {e}")
-        await websocket.close(code=1008, reason="Authentication failed")
+        logger.error(f"WS auth error: {e}")
+        await websocket.close(code=1008, reason="Authentification échouée")
         return
-    
-    await manager.connect(game_id, websocket)
-    
+
+    # Connexion avec user_id pour les notifications personnelles
+    await manager.connect(game_id, websocket, user_id=user['id'])
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
+
         cursor.execute("""
-            SELECT g.*, 
+            SELECT g.*,
                    COUNT(gp.id) as participants_count,
                    GROUP_CONCAT(DISTINCT u.username) as participants
             FROM games g
@@ -699,19 +700,19 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
             WHERE g.id = %s
             GROUP BY g.id
         """, (game_id,))
-        
+
         game_state = cursor.fetchone()
         cursor.close()
         conn.close()
-        
+
         if game_state:
             game_state = serialize_for_json(game_state)
-        
+
         await websocket.send_json({
             'type': 'game_state',
             'data': game_state
         })
-        
+
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
@@ -721,10 +722,10 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
                 await websocket.send_json({'type': 'heartbeat'})
             except WebSocketDisconnect:
                 break
-            
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected: Game {game_id}")
+        logger.info(f"WS déconnecté: partie {game_id}")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WS error: {e}")
     finally:
-        manager.disconnect(game_id, websocket)
+        manager.disconnect(game_id, websocket, user_id=user['id'] if user else None)
