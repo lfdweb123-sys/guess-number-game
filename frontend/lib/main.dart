@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'screens/login_screen.dart';
-import 'screens/home_screen.dart';
 import 'providers/auth_provider.dart';
 import 'providers/game_provider.dart';
+import 'screens/login_screen.dart';
+import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,8 +33,8 @@ class MyApp extends StatelessWidget {
           useMaterial3: true,
         ),
         home: initialToken != null && initialToken!.isNotEmpty
-            ? HomeScreen()
-            : LoginScreen(),
+            ? const HomeScreen()
+            : const LoginScreen(),
         debugShowCheckedModeBanner: false,
       ),
     );

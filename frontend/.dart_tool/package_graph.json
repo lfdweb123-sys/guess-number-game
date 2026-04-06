@@ -10,6 +10,7 @@
         "flutter",
         "flutter_dotenv",
         "http",
+        "intl",
         "provider",
         "shared_preferences",
         "web_socket_channel"
@@ -42,6 +43,15 @@
         "stream_channel",
         "test_api",
         "vector_math"
+      ]
+    },
+    {
+      "name": "intl",
+      "version": "0.18.1",
+      "dependencies": [
+        "clock",
+        "meta",
+        "path"
       ]
     },
     {

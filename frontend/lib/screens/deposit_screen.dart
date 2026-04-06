@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/api_service.dart';
 import '../providers/auth_provider.dart';
+import '../services/notification_service.dart';
+import '../config/colors.dart';
+import '../widgets/custom_button.dart';
 
 class DepositScreen extends StatefulWidget {
   const DepositScreen({super.key});
@@ -15,39 +18,89 @@ class _DepositScreenState extends State<DepositScreen> {
   final _phoneController = TextEditingController();
   final _amountController = TextEditingController();
   bool _isDepositing = false;
+  String _selectedProvider = 'MTN';
+
+  final List<String> _providers = ['MTN', 'Orange', 'Moov'];
 
   @override
   Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Deposit via Mobile Money'),
+        title: const Text('Deposit Funds'),
+        backgroundColor: Colors.transparent,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Card(
-                color: Colors.blue.shade50,
-                child: const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Enter your mobile money number and amount to deposit.',
-                          style: TextStyle(fontSize: 14),
-                        ),
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: AppColors.goldGradient,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      'Current Balance',
+                      style: TextStyle(color: AppColors.black),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '\$${authProvider.balance.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.black,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
+              const Text(
+                'Select Provider',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: _providers.map((provider) {
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: GestureDetector(
+                        onTap: () =>
+                            setState(() => _selectedProvider = provider),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: _selectedProvider == provider
+                                ? AppColors.gold
+                                : Colors.grey.shade800,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            provider,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _selectedProvider == provider
+                                  ? AppColors.black
+                                  : Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
               const Text(
                 'Phone Number',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
@@ -56,10 +109,12 @@ class _DepositScreenState extends State<DepositScreen> {
               TextFormField(
                 controller: _phoneController,
                 keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
                   hintText: 'Enter your mobile money number',
-                  prefixIcon: Icon(Icons.phone_android),
+                  prefixIcon: Icon(Icons.phone_android, color: AppColors.gold),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -80,10 +135,13 @@ class _DepositScreenState extends State<DepositScreen> {
               TextFormField(
                 controller: _amountController,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'Enter amount',
-                  prefixIcon: Icon(Icons.attach_money),
+                decoration: InputDecoration(
+                  hintText: 'Enter amount (min \$5)',
+                  prefixIcon: Icon(Icons.attach_money, color: AppColors.gold),
+                  suffixText: 'USD',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -93,49 +151,64 @@ class _DepositScreenState extends State<DepositScreen> {
                   if (amount == null || amount <= 0) {
                     return 'Please enter valid amount';
                   }
+                  if (amount < 5) {
+                    return 'Minimum deposit is \$5';
+                  }
                   return null;
                 },
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Quick Amount',
+                style: TextStyle(fontSize: 14, color: Colors.grey),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                children: [10, 20, 50, 100, 200].map((amount) {
+                  return FilterChip(
+                    label: Text('\$$amount'),
+                    selected: _amountController.text == amount.toString(),
+                    onSelected: (_) {
+                      setState(() {
+                        _amountController.text = amount.toString();
+                      });
+                    },
+                    backgroundColor: Colors.grey.shade800,
+                    selectedColor: AppColors.gold,
+                    labelStyle: TextStyle(
+                      color: _amountController.text == amount.toString()
+                          ? AppColors.black
+                          : Colors.white,
+                    ),
+                  );
+                }).toList(),
+              ),
               const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: _isDepositing ? null : _deposit,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                  ),
-                  child: _isDepositing
-                      ? const CircularProgressIndicator()
-                      : const Text(
-                          'Deposit Now',
-                          style: TextStyle(fontSize: 18, color: Colors.white),
-                        ),
-                ),
+              CustomButton(
+                text: 'Deposit Now',
+                onPressed: _isDepositing ? () {} : () => _deposit(),
+                icon: Icons.payment,
               ),
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey.shade800,
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: const Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Supported Mobile Money:',
+                      'ℹ️ Information',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     SizedBox(height: 8),
-                    Text('• MTN Mobile Money'),
-                    Text('• Orange Money'),
-                    Text('• Moov Money'),
-                    SizedBox(height: 8),
-                    Text(
-                      'Minimum deposit: \$5.00',
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
+                    Text('• Processing time: Instant'),
+                    Text('• Minimum deposit: \$5.00'),
+                    Text('• No fees for deposits'),
+                    Text('• Test mode: No real money deducted'),
                   ],
                 ),
               ),
@@ -160,38 +233,17 @@ class _DepositScreenState extends State<DepositScreen> {
 
       if (mounted) {
         if (response['success']) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(response['message']),
-              backgroundColor: Colors.green,
-            ),
-          );
-
-          // Refresh balance
           await Provider.of<AuthProvider>(context, listen: false).loadBalance();
-
-          // Close dialog after 2 seconds
+          NotificationService.showSuccess(response['message']);
           Future.delayed(const Duration(seconds: 2), () {
             if (mounted) Navigator.pop(context);
           });
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(response['message']),
-              backgroundColor: Colors.red,
-            ),
-          );
+          NotificationService.showError(response['message']);
         }
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Deposit failed. Please try again.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+      NotificationService.showError('Deposit failed. Please try again.');
     } finally {
       if (mounted) {
         setState(() => _isDepositing = false);

@@ -11,6 +11,15 @@ class ApiService {
   static Future<Map<String, String>> _getHeaders() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('auth_token');
+
+    // LOGS DE DEBUG
+    print('========== GET HEADERS ==========');
+    print('Token from SharedPreferences: ${token != null ? "EXISTS" : "NULL"}');
+    if (token != null && token.length > 20) {
+      print('Token preview: ${token.substring(0, 20)}...');
+    }
+    print('================================');
+
     return {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer $token',
@@ -44,7 +53,18 @@ class ApiService {
       );
 
       print('Login response: ${response.statusCode} - ${response.body}');
-      return json.decode(response.body);
+
+      final data = json.decode(response.body);
+
+      // VÉRIFIER QUE LE TOKEN EST REÇU
+      if (data.containsKey('access_token')) {
+        print(
+            '✅ Token received from backend: ${data['access_token'].substring(0, 20)}...');
+      } else {
+        print('❌ No token in response!');
+      }
+
+      return data;
     } catch (e) {
       print('Login error: $e');
       return {'error': e.toString()};
@@ -53,10 +73,20 @@ class ApiService {
 
   static Future<Map<String, dynamic>> getUserBalance() async {
     final headers = await _getHeaders();
+
+    print('========== BALANCE REQUEST ==========');
+    print('URL: $baseUrl/api/user/balance');
+    print('Authorization header: ${headers['Authorization']}');
+    print('====================================');
+
     final response = await http.get(
       Uri.parse('$baseUrl/api/user/balance'),
       headers: headers,
     );
+
+    print('Balance response status: ${response.statusCode}');
+    print('Balance response body: ${response.body}');
+
     return json.decode(response.body);
   }
 
@@ -67,6 +97,7 @@ class ApiService {
       headers: headers,
       body: json.encode({'bet_amount': betAmount}),
     );
+    print('Create game response: ${response.statusCode}');
     return json.decode(response.body);
   }
 
@@ -78,6 +109,7 @@ class ApiService {
       headers: headers,
       body: json.encode({'game_id': gameId, 'guessed_number': guessedNumber}),
     );
+    print('Join game response: ${response.statusCode}');
     return json.decode(response.body);
   }
 
@@ -87,6 +119,7 @@ class ApiService {
       Uri.parse('$baseUrl/api/games/available'),
       headers: headers,
     );
+    print('Get games response: ${response.statusCode}');
     final List<dynamic> data = json.decode(response.body);
     return data.map((json) => Game.fromJson(json)).toList();
   }

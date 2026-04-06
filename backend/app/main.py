@@ -39,7 +39,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS for Flutter web - CORRECTED
+# CORS for Flutter web
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -77,7 +77,6 @@ async def root():
 async def health_check():
     """Health check endpoint for Railway and monitoring"""
     try:
-        # Test database connection
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
@@ -102,25 +101,18 @@ async def health_check():
             }
         )
 
-# Authentication dependency with better error handling
+# Authentication dependency
 async def get_current_user(request: Request):
-    """
-    Récupère l'utilisateur courant à partir du token JWT dans le header Authorization
-    """
-    # Récupérer le header Authorization
     auth_header = request.headers.get('Authorization')
     
     if not auth_header:
         raise HTTPException(status_code=401, detail="Not authenticated - No Authorization header")
     
-    # Vérifier le format "Bearer <token>"
     parts = auth_header.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=401, detail="Invalid authorization header format. Use 'Bearer <token>'")
     
     token = parts[1]
-    
-    # Décoder le token
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -136,7 +128,6 @@ async def get_current_user(request: Request):
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
-        # Retirer le mot de passe
         user.pop('password_hash', None)
         return user
     except Exception as e:
@@ -148,11 +139,8 @@ async def get_current_user(request: Request):
         if conn:
             conn.close()
 
-
-
 @app.get("/api/verify-token")
 async def verify_token(current_user: dict = Depends(get_current_user)):
-    """Vérifie si le token est valide"""
     return {
         "valid": True, 
         "user_id": current_user['id'], 
@@ -160,8 +148,7 @@ async def verify_token(current_user: dict = Depends(get_current_user)):
         "balance": current_user['balance']
     }
 
-
-# Ajouter après les endpoints de dépôt
+# Mobile Money endpoints
 @app.post("/api/mobile-money/withdraw")
 async def mobile_money_withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
     if withdraw.amount <= 0:
@@ -198,6 +185,72 @@ async def check_withdrawal_status(transaction_id: str, current_user: dict = Depe
         logger.error(f"Check withdrawal status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to check status")
 
+# Transaction history
+@app.get("/api/user/transactions")
+async def get_transactions(current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT * FROM transactions 
+        WHERE user_id = %s 
+        ORDER BY created_at DESC 
+        LIMIT 50
+    """, (current_user['id'],))
+    
+    transactions = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return {"transactions": transactions}
+
+# User statistics
+@app.get("/api/user/stats")
+async def get_user_stats(current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total_games,
+            SUM(CASE WHEN winner_id = %s THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN winner_id = %s THEN amount ELSE 0 END) as total_won
+        FROM game_participants gp
+        JOIN games g ON gp.game_id = g.id
+        WHERE gp.user_id = %s
+    """, (current_user['id'], current_user['id'], current_user['id']))
+    
+    stats = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    return stats
+
+# Leaderboard
+@app.get("/api/leaderboard")
+async def get_leaderboard(limit: int = 10):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT 
+            u.id,
+            u.username,
+            COUNT(CASE WHEN g.winner_id = u.id THEN 1 END) as wins,
+            COALESCE(SUM(CASE WHEN g.winner_id = u.id THEN g.total_pot * 0.75 ELSE 0 END), 0) as total_won
+        FROM users u
+        LEFT JOIN games g ON g.winner_id = u.id
+        WHERE u.id > 1
+        GROUP BY u.id
+        ORDER BY wins DESC
+        LIMIT %s
+    """, (limit,))
+    
+    leaderboard = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return leaderboard
 
 # User endpoints
 @app.post("/api/register")
@@ -371,13 +424,15 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         
         logger.info(f"User {current_user['id']} joined game {join_data.game_id}")
         
+        # Start timer if enough players (minimum 2)
         if participant_count >= 2:
             cursor = conn.cursor(dictionary=True)
             cursor.execute("UPDATE games SET status = 'active' WHERE id = %s", 
                           (join_data.game_id,))
             conn.commit()
             
-            asyncio.create_task(process_game_winner(join_data.game_id))
+            # Start 30 second timer
+            asyncio.create_task(start_game_timer(join_data.game_id))
         
         return {"message": "Joined game successfully"}
     except HTTPException:
@@ -393,9 +448,19 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         if conn:
             conn.close()
 
-async def process_game_winner(game_id: int):
+async def start_game_timer(game_id: int):
+    """30 second timer before game ends, broadcasts countdown"""
     try:
-        await asyncio.sleep(1)
+        # Broadcast timer for 30 seconds
+        for i in range(30, 0, -1):
+            logger.info(f"Game {game_id} ends in {i} seconds...")
+            await manager.broadcast_to_game(game_id, {
+                'type': 'timer',
+                'seconds': i
+            })
+            await asyncio.sleep(1)
+        
+        # Determine winner
         result = determine_game_winner(game_id)
         
         if result:
@@ -407,7 +472,7 @@ async def process_game_winner(game_id: int):
                 'winner_amount': float(result['winner_amount'])
             })
     except Exception as e:
-        logger.error(f"Error processing game winner for game {game_id}: {e}")
+        logger.error(f"Error in game timer for game {game_id}: {e}")
 
 @app.get("/api/games/available")
 async def get_available_games(current_user: dict = Depends(get_current_user)):
