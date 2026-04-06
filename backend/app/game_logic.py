@@ -20,10 +20,12 @@ def calculate_payout(total_pot):
     return winner_payout, commission
 
 def determine_game_winner(game_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
+    conn = None
+    cursor = None
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
         # Get game details
         cursor.execute("SELECT * FROM games WHERE id = %s", (game_id,))
         game = cursor.fetchone()
@@ -50,12 +52,12 @@ def determine_game_winner(game_id: int):
         winner_id = calculate_winner(participants, winning_number)
         
         # Convertir Decimal en float pour le calcul
-        total_pot = float(game['total_pot']) if isinstance(game['total_pot'], Decimal) else game['total_pot']
+        total_pot = float(game['total_pot']) if isinstance(game['total_pot'], Decimal) else float(game['total_pot'])
         
         # Calculate payouts
         winner_amount, commission = calculate_payout(total_pot)
         
-        # Update game
+        # Update game status
         cursor.execute("""
             UPDATE games 
             SET status = 'ended', winning_number = %s, winner_id = %s, ended_at = NOW()
@@ -84,13 +86,16 @@ def determine_game_winner(game_id: int):
         return {
             'winning_number': winning_number,
             'winner_id': winner_id,
-            'winner_amount': winner_amount,
-            'commission': commission
+            'winner_amount': float(winner_amount),
+            'commission': float(commission)
         }
     except Exception as e:
         print(f"Error in determine_game_winner: {e}")
-        conn.rollback()
-        raise
+        if conn:
+            conn.rollback()
+        return None
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
