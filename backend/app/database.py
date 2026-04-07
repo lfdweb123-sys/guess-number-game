@@ -21,8 +21,8 @@ db_config = {
     'pool_size': int(os.getenv('DB_POOL_SIZE', 10)),
     'pool_reset_session': True,
     'autocommit': False,
-    'use_pure': True,  # Better compatibility for Railway
-    'connection_timeout': 30,  # Timeout for connections
+    'use_pure': True,
+    'connection_timeout': 30,
 }
 
 # Global connection pool
@@ -32,7 +32,6 @@ def init_connection_pool():
     """Initialize the database connection pool"""
     global connection_pool
     try:
-        # Validate required config values
         required_keys = ['host', 'user', 'password', 'database']
         for key in required_keys:
             if not db_config.get(key):
@@ -41,7 +40,6 @@ def init_connection_pool():
         connection_pool = pooling.MySQLConnectionPool(**db_config)
         logger.info(f"Database connection pool '{db_config['pool_name']}' initialized on {db_config['host']}:{db_config['port']}")
         
-        # Test connection
         test_conn = connection_pool.get_connection()
         test_conn.ping(reconnect=True)
         test_conn.close()
@@ -50,7 +48,6 @@ def init_connection_pool():
         return True
     except Exception as e:
         logger.error(f"Failed to initialize database connection pool: {e}")
-        # Don't raise, let the app try to reconnect later
         connection_pool = None
         return False
 
@@ -58,24 +55,20 @@ def get_db_connection():
     """Get a connection from the pool with retry logic"""
     global connection_pool
     
-    # Try to initialize if not already done
     if connection_pool is None:
         if not init_connection_pool():
             raise Exception("Database connection pool not initialized")
     
-    # Try to get connection with retry
     max_retries = 3
     for attempt in range(max_retries):
         try:
             connection = connection_pool.get_connection()
-            # Verify connection is alive
             connection.ping(reconnect=True)
             return connection
         except Exception as e:
             logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
             if attempt == max_retries - 1:
                 raise
-            # Reinitialize pool on failure
             connection_pool = None
             init_connection_pool()
     
@@ -86,7 +79,6 @@ def close_db_connections():
     global connection_pool
     try:
         if connection_pool:
-            # Close all connections in the pool
             if hasattr(connection_pool, '_cnx_queue'):
                 closed_count = 0
                 while not connection_pool._cnx_queue.empty():
@@ -98,8 +90,6 @@ def close_db_connections():
                     except:
                         pass
                 logger.info(f"Closed {closed_count} database connections")
-            
-            # Clear the pool reference
             connection_pool = None
     except Exception as e:
         logger.error(f"Error closing database connections: {e}")
@@ -127,7 +117,7 @@ def init_database():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Users table
+        # ── Users ────────────────────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -135,14 +125,13 @@ def init_database():
                 password_hash VARCHAR(255) NOT NULL,
                 balance DECIMAL(10,2) DEFAULT 0.00,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fcm_token VARCHAR(255) NULL,
                 INDEX idx_username (username),
                 INDEX idx_balance (balance)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         logger.info("Users table ready")
         
-        # Games table
+        # ── Games ────────────────────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS games (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -163,7 +152,7 @@ def init_database():
         """)
         logger.info("Games table ready")
         
-        # Game participants
+        # ── Game participants ─────────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS game_participants (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -181,7 +170,7 @@ def init_database():
         """)
         logger.info("Game participants table ready")
 
-        # Dans init_database(), ajoute :
+        # ── Mobile money withdrawals (ancienne table) ─────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS mobile_money_withdrawals (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -198,8 +187,9 @@ def init_database():
                 INDEX idx_transaction (transaction_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
-        
-        # Transactions table
+        logger.info("Mobile money withdrawals table ready")
+
+        # ── Transactions ──────────────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -219,7 +209,7 @@ def init_database():
         """)
         logger.info("Transactions table ready")
         
-        # Mobile money deposits
+        # ── Mobile money deposits ─────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS mobile_money_deposits (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -238,8 +228,28 @@ def init_database():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         logger.info("Mobile money deposits table ready")
-        
-        # Create additional indexes for better performance
+
+        # ── Withdrawal requests ← NOUVELLE TABLE ─────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS withdrawal_requests (
+                id             INT AUTO_INCREMENT PRIMARY KEY,
+                user_id        INT           NOT NULL,
+                phone_number   VARCHAR(20)   NOT NULL,
+                amount         DECIMAL(10,2) NOT NULL,
+                provider       VARCHAR(20)   NOT NULL DEFAULT 'MTN',
+                transaction_id VARCHAR(100)  UNIQUE,
+                status         VARCHAR(20)   NOT NULL DEFAULT 'pending',
+                created_at     TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+                processed_at   TIMESTAMP     NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user        (user_id),
+                INDEX idx_status      (status),
+                INDEX idx_transaction (transaction_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        logger.info("Withdrawal requests table ready")
+
+        # ── Index supplémentaires ─────────────────────────────
         try:
             cursor.execute("CREATE INDEX idx_games_status_created ON games(status, created_at)")
             logger.info("Created index idx_games_status_created")
@@ -252,12 +262,11 @@ def init_database():
         except Exception as e:
             logger.info(f"Index idx_participants_game_user already exists or error: {e}")
         
-        # Seed initial data from SQL file
+        # ── Seed depuis init_db.sql ───────────────────────────
         sql_file_path = os.path.join(os.path.dirname(__file__), '..', 'init_db.sql')
         try:
             with open(sql_file_path, 'r', encoding='utf-8') as f:
                 sql_content = f.read()
-            # Execute each non-empty, non-comment statement
             for statement in sql_content.split(';'):
                 statement = statement.strip()
                 if statement and not statement.startswith('--'):
@@ -282,12 +291,15 @@ def init_database():
         if conn:
             conn.close()
 
+
+# ─────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────
 def get_user_balance(user_id: int):
     """Get user balance"""
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT balance FROM users WHERE id = %s", (user_id,))
         result = cursor.fetchone()
@@ -296,48 +308,36 @@ def get_user_balance(user_id: int):
         logger.error(f"Error getting user balance: {e}")
         raise
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 def update_user_balance(user_id: int, amount: float, transaction_type: str, reference: str):
     """Update user balance and record transaction"""
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor()
-        
-        # Update balance
         cursor.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (amount, user_id))
-        
-        # Record transaction
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, %s, %s, 'completed')
         """, (user_id, amount, transaction_type, reference))
-        
         conn.commit()
         logger.info(f"Balance updated: User {user_id}, Amount ${amount}, Type {transaction_type}")
         return True
     except Exception as e:
-        if conn:
-            conn.rollback()
+        if conn: conn.rollback()
         logger.error(f"Error updating user balance: {e}")
         raise
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 def get_game_participants(game_id: int):
     """Get all participants of a game"""
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT gp.user_id, gp.guessed_number, u.username, u.balance
@@ -350,17 +350,14 @@ def get_game_participants(game_id: int):
         logger.error(f"Error getting game participants: {e}")
         raise
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 def get_game_by_id(game_id: int):
     """Get game details by ID"""
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT g.*, u.username as creator_name
@@ -370,7 +367,6 @@ def get_game_by_id(game_id: int):
         """, (game_id,))
         result = cursor.fetchone()
         if result:
-            # Convert Decimal to float
             if 'bet_amount' in result and result['bet_amount']:
                 result['bet_amount'] = float(result['bet_amount'])
             if 'total_pot' in result and result['total_pot']:
@@ -380,10 +376,9 @@ def get_game_by_id(game_id: int):
         logger.error(f"Error getting game by ID: {e}")
         raise
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
+
 
 # Initialize connection pool on module load
 init_connection_pool()
