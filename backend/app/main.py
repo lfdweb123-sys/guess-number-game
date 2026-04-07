@@ -890,17 +890,73 @@ async def join_game(join_data: JoinGame, current_user: dict = Depends(get_curren
         if conn:   conn.close()
 
 async def start_game_timer(game_id: int):
+    """Timer avec notification immédiate à TOUS les joueurs à la fin"""
     from .bot_service import _notify_game_result
     try:
+        # Timer de 30 secondes
         for i in range(30, 0, -1):
             logger.info(f"Partie {game_id} — fin dans {i}s")
             await manager.broadcast_to_game(game_id, {'type': 'timer', 'seconds': i})
             await asyncio.sleep(1)
-
+        
+        # FIN DU TIMER - Déterminer le gagnant
         result = determine_game_winner(game_id)
+        
         if result:
+            # Envoyer le résultat à TOUS les joueurs connectés IMMÉDIATEMENT
+            winner_id = result['winner_id']
+            winning_number = result['winning_number']
+            winner_amount = result['winner_amount']
+            
+            # Récupérer tous les participants pour envoyer des messages individuels
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT DISTINCT user_id FROM game_participants WHERE game_id = %s
+            """, (game_id,))
+            participants = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            # Envoyer le résultat à chaque joueur via WebSocket
+            for participant in participants:
+                user_id = participant['user_id']
+                is_winner = (user_id == winner_id)
+                
+                # Message spécifique pour chaque joueur
+                message = {
+                    'type': 'game_ended',
+                    'winner_id': winner_id,
+                    'winning_number': winning_number,
+                    'winner_amount': float(winner_amount),
+                    'is_winner': is_winner  # Important : dit directement au joueur s'il a gagné
+                }
+                
+                # Envoi individuel via WebSocket
+                await manager.send_to_user_in_game(game_id, user_id, message)
+            
+            # Notification push pour le gagnant
+            await send_push_notification(
+                user_id=winner_id,
+                title="🎉 FÉLICITATIONS !",
+                body=f"Vous avez gagné {float(winner_amount):,.0f} XOF !",
+                data={'type': 'game_won', 'game_id': str(game_id)}
+            )
+            
+            # Notification push pour les perdants
+            for participant in participants:
+                if participant['user_id'] != winner_id:
+                    await send_push_notification(
+                        user_id=participant['user_id'],
+                        title="😢 Partie terminée",
+                        body=f"Le numéro gagnant était {winning_number}. Meilleure chance !",
+                        data={'type': 'game_lost', 'game_id': str(game_id)}
+                    )
+            
+            # Appeler la fonction de notification existante
             await _notify_game_result(game_id, result)
-            logger.info(f"Partie {game_id} terminée — gagnant: {result['winner_id']}")
+            logger.info(f"Partie {game_id} terminée — gagnant: {winner_id}, numéro: {winning_number}")
+            
     except Exception as e:
         logger.error(f"Erreur timer partie {game_id}: {e}")
 
