@@ -109,6 +109,68 @@ def test_connection():
         logger.error(f"Database connection test failed: {e}")
         return False
 
+def ensure_fcm_token_column():
+    """Ajoute la colonne fcm_token si elle n'existe pas"""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.columns 
+            WHERE table_schema = DATABASE()
+            AND table_name = 'users' 
+            AND column_name = 'fcm_token'
+        """)
+        exists = cursor.fetchone()[0]
+        
+        if not exists:
+            cursor.execute("ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL")
+            cursor.execute("CREATE INDEX idx_fcm_token ON users(fcm_token)")
+            conn.commit()
+            logger.info("✅ Colonne fcm_token ajoutée à la table users")
+        else:
+            logger.info("✅ Colonne fcm_token existe déjà")
+    except Exception as e:
+        logger.warning(f"Erreur lors de l'ajout de fcm_token: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def clear_all_games():
+    """Vide tous les jeux existants (pour reset)"""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Supprimer les participants
+        cursor.execute("DELETE FROM game_participants")
+        # Supprimer les jeux
+        cursor.execute("DELETE FROM games")
+        # Reset auto_increment
+        cursor.execute("ALTER TABLE games AUTO_INCREMENT = 1")
+        cursor.execute("ALTER TABLE game_participants AUTO_INCREMENT = 1")
+        
+        conn.commit()
+        logger.info("✅ Tous les jeux ont été vidés")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur lors du vidage des jeux: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
 def init_database():
     """Initialize database tables with error handling"""
     conn = None
@@ -125,7 +187,6 @@ def init_database():
                 password_hash VARCHAR(255) NOT NULL,
                 balance DECIMAL(10,2) DEFAULT 0.00,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fcm_token VARCHAR(255) NULL,
                 INDEX idx_username (username),
                 INDEX idx_balance (balance)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -230,7 +291,7 @@ def init_database():
         """)
         logger.info("Mobile money deposits table ready")
 
-        # ── Withdrawal requests ← NOUVELLE TABLE ─────────────
+        # ── Withdrawal requests ─────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS withdrawal_requests (
                 id             INT AUTO_INCREMENT PRIMARY KEY,
@@ -262,6 +323,9 @@ def init_database():
             logger.info("Created index idx_participants_game_user")
         except Exception as e:
             logger.info(f"Index idx_participants_game_user already exists or error: {e}")
+        
+        # ── Ajouter la colonne fcm_token ──────────────────────
+        ensure_fcm_token_column()
         
         # ── Seed depuis init_db.sql ───────────────────────────
         sql_file_path = os.path.join(os.path.dirname(__file__), '..', 'init_db.sql')
