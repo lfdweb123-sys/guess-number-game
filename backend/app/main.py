@@ -55,7 +55,7 @@ def init_firebase_admin():
     if _firebase_app is None:
         try:
             import os
-            cred_path = "firebase_credentials.json"
+            cred_path = os.path.join(os.path.dirname(__file__), "..", "firebase_credentials.json")
             if not os.path.exists(cred_path):
                 logger.warning(f"⚠️  Firebase credentials file not found at {cred_path}. Push notifications will be disabled.")
                 return
