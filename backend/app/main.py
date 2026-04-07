@@ -1116,11 +1116,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
 // ═══════════════════════════════════════════════════════════════
 // À AJOUTER dans main.py (FastAPI) — endpoint change-password
 // ═══════════════════════════════════════════════════════════════
- 
-# ============================================================
-# ENDPOINT: Changer le mot de passe
-# ============================================================
-
 @app.post("/api/change-password")
 async def change_password(request: Request):
     data = await request.json()
@@ -1132,7 +1127,7 @@ async def change_password(request: Request):
         raise HTTPException(status_code=400, detail="Champs manquants")
 
     if len(new_password) < 4:
-        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court (minimum 4 caractères)")
+        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court")
 
     conn = cursor = None
     try:
@@ -1153,18 +1148,7 @@ async def change_password(request: Request):
         conn.commit()
         logger.info(f"Mot de passe changé pour {username}")
 
-        # Optionnel: Envoyer une notification push à l'utilisateur
-        try:
-            asyncio.create_task(send_push_notification(
-                user_id=user['id'],
-                title="🔐 Mot de passe modifié",
-                body="Votre mot de passe a été changé avec succès.",
-                data={'type': 'password_changed'}
-            ))
-        except Exception as push_error:
-            logger.warning(f"Push notification failed: {push_error}")
-
-        return {"success": True, "message": "Mot de passe modifié avec succès"}
+        return {"success": True, "message": "Mot de passe modifie avec succes"}
 
     except HTTPException:
         raise
