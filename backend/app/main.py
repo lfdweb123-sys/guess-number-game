@@ -54,11 +54,17 @@ def init_firebase_admin():
     global _firebase_app
     if _firebase_app is None:
         try:
-            cred = credentials.Certificate("firebase_credentials.json")
+            import os
+            cred_path = "firebase_credentials.json"
+            if not os.path.exists(cred_path):
+                logger.warning(f"⚠️  Firebase credentials file not found at {cred_path}. Push notifications will be disabled.")
+                return
+
+            cred = credentials.Certificate(cred_path)
             _firebase_app = firebase_admin.initialize_app(cred)
             logger.info("✅ Firebase Admin SDK initialisé")
         except Exception as e:
-            logger.error(f"❌ Erreur init Firebase Admin: {e}")
+            logger.warning(f"⚠️  Firebase Admin SDK initialization failed: {e}. Push notifications will be disabled.")
 
 
 # ─────────────────────────────────────────────
