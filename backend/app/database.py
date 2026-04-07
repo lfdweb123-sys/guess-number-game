@@ -135,6 +135,7 @@ def init_database():
                 password_hash VARCHAR(255) NOT NULL,
                 balance DECIMAL(10,2) DEFAULT 0.00,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                fcm_token VARCHAR(255) NULL,
                 INDEX idx_username (username),
                 INDEX idx_balance (balance)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
