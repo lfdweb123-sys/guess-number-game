@@ -1113,9 +1113,13 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
         manager.disconnect(game_id, websocket, user_id=user['id'] if user else None)
 
 
-// ═══════════════════════════════════════════════════════════════
-// À AJOUTER dans main.py (FastAPI) — endpoint change-password
-// ═══════════════════════════════════════════════════════════════
+#// ═══════════════════════════════════════════════════════════════
+#// À AJOUTER dans main.py (FastAPI) — endpoint change-password
+#// ═══════════════════════════════════════════════════════════════
+# ============================================================
+# ENDPOINT: Changer le mot de passe
+# ============================================================
+
 @app.post("/api/change-password")
 async def change_password(request: Request):
     data = await request.json()
@@ -1127,7 +1131,7 @@ async def change_password(request: Request):
         raise HTTPException(status_code=400, detail="Champs manquants")
 
     if len(new_password) < 4:
-        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court")
+        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court (minimum 4 caracteres)")
 
     conn = cursor = None
     try:
@@ -1146,7 +1150,7 @@ async def change_password(request: Request):
             (new_hash, user['id'])
         )
         conn.commit()
-        logger.info(f"Mot de passe changé pour {username}")
+        logger.info(f"Mot de passe change pour {username}")
 
         return {"success": True, "message": "Mot de passe modifie avec succes"}
 
@@ -1160,6 +1164,12 @@ async def change_password(request: Request):
             cursor.close()
         if conn:
             conn.close()
+
+# ============================================================
+# SQL - A executer UNE SEULE FOIS sur Railway
+# ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
+# CREATE INDEX idx_fcm_token ON users(fcm_token);
+# ============================================================
 
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
