@@ -1,4 +1,4 @@
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 import asyncio
 import logging
 from fastapi import WebSocket
@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 class ConnectionManager:
     def __init__(self):
-        # Connexions par partie : {game_id: {websocket, ...}}
-        self.game_connections: Dict[int, Set[WebSocket]] = {}
+        # Connexions par partie : {game_id: [{websocket, user_id}, ...]}
+        self.game_connections: Dict[int, Set[dict]] = {}
 
         # Connexions personnelles par user : {user_id: {websocket, ...}}
         # Permet les notifications cross-screen (hors partie active)
@@ -24,7 +24,12 @@ class ConnectionManager:
 
         if game_id not in self.game_connections:
             self.game_connections[game_id] = set()
-        self.game_connections[game_id].add(websocket)
+        
+        # Stocker le websocket avec son user_id
+        self.game_connections[game_id].add({
+            'websocket': websocket,
+            'user_id': user_id
+        })
 
         # Enregistrer aussi sur le canal personnel si user_id fourni
         if user_id:
@@ -37,7 +42,15 @@ class ConnectionManager:
 
     def disconnect(self, game_id: int, websocket: WebSocket, user_id: int | None = None):
         if game_id in self.game_connections:
-            self.game_connections[game_id].discard(websocket)
+            # Trouver et supprimer la connexion
+            to_remove = None
+            for conn in self.game_connections[game_id]:
+                if conn.get('websocket') == websocket:
+                    to_remove = conn
+                    break
+            if to_remove:
+                self.game_connections[game_id].discard(to_remove)
+            
             if not self.game_connections[game_id]:
                 del self.game_connections[game_id]
 
@@ -71,15 +84,39 @@ class ConnectionManager:
             return
 
         dead = set()
-        for ws in self.game_connections[game_id].copy():
+        for conn in self.game_connections[game_id].copy():
+            ws = conn.get('websocket')
             try:
                 await ws.send_json(message)
             except Exception as e:
                 logger.warning(f"Broadcast game {game_id} échoué: {e}")
-                dead.add(ws)
+                dead.add(conn)
 
-        for ws in dead:
-            self.game_connections[game_id].discard(ws)
+        for conn in dead:
+            self.game_connections[game_id].discard(conn)
+
+    async def send_to_user_in_game(self, game_id: int, user_id: int, message: dict):
+        """
+        Envoie un message à un utilisateur spécifique dans une partie.
+        Utilisé pour envoyer des résultats individuels (gagnant/perdant).
+        """
+        if game_id not in self.game_connections:
+            logger.debug(f"Game {game_id} n'existe pas ou n'a pas de connexions")
+            return False
+
+        for conn in self.game_connections[game_id]:
+            if conn.get('user_id') == user_id:
+                ws = conn.get('websocket')
+                try:
+                    await ws.send_json(message)
+                    logger.info(f"✅ Message envoyé à user {user_id} dans game {game_id}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Erreur envoi à user {user_id} dans game {game_id}: {e}")
+                    return False
+        
+        logger.debug(f"User {user_id} non trouvé dans game {game_id} (connecté via autre canal?)")
+        return False
 
     async def send_to_user(self, user_id: int, message: dict):
         """
@@ -88,18 +125,22 @@ class ConnectionManager:
         """
         if user_id not in self.user_connections:
             logger.debug(f"Pas de WS actif pour user {user_id}")
-            return
+            return False
 
         dead = set()
+        success = False
         for ws in self.user_connections[user_id].copy():
             try:
                 await ws.send_json(message)
+                success = True
             except Exception as e:
                 logger.warning(f"send_to_user {user_id} échoué: {e}")
                 dead.add(ws)
 
         for ws in dead:
             self._unregister_user(user_id, ws)
+        
+        return success
 
     async def broadcast_to_all(self, message: dict):
         """Broadcast global — toutes les parties."""
@@ -114,6 +155,18 @@ class ConnectionManager:
 
     def is_user_online(self, user_id: int) -> bool:
         return user_id in self.user_connections and bool(self.user_connections[user_id])
+    
+    def get_game_participants_online(self, game_id: int) -> list:
+        """Retourne la liste des user_ids connectés à une partie"""
+        if game_id not in self.game_connections:
+            return []
+        
+        users = []
+        for conn in self.game_connections[game_id]:
+            user_id = conn.get('user_id')
+            if user_id:
+                users.append(user_id)
+        return users
 
 
 manager = ConnectionManager()
