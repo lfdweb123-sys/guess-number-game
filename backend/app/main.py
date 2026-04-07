@@ -5,6 +5,9 @@ from typing import List, Optional
 from fastapi import Request
 import asyncio
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from contextlib import asynccontextmanager
 from datetime import datetime, date
 from decimal import Decimal
@@ -18,14 +21,51 @@ import mysql.connector
 import secrets
 import httpx
 
+# ============================================================
+# Firebase Admin SDK
+# pip install firebase-admin
+# Place firebase_credentials.json à la racine du projet backend
+# ============================================================
+import firebase_admin
+from firebase_admin import credentials, messaging as fcm_messaging
 
-# Configure logging
+
+# ─────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# ─────────────────────────────────────────────
+# Configuration Email Admin
+# ─────────────────────────────────────────────
+EMAIL_ADMIN    = "servicescomeup123@gmail.com"
+EMAIL_PASSWORD = "rwyezyfswwurmmji"   # ← Remplace par ton mot de passe d'application Gmail
+
+
+# ─────────────────────────────────────────────
+# Firebase Admin Init
+# ─────────────────────────────────────────────
+_firebase_app = None
+
+def init_firebase_admin():
+    """Initialiser le SDK Firebase Admin (appelé dans lifespan)."""
+    global _firebase_app
+    if _firebase_app is None:
+        try:
+            cred = credentials.Certificate("firebase_credentials.json")
+            _firebase_app = firebase_admin.initialize_app(cred)
+            logger.info("✅ Firebase Admin SDK initialisé")
+        except Exception as e:
+            logger.error(f"❌ Erreur init Firebase Admin: {e}")
+
+
+# ─────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────
 def serialize_for_json(obj):
-    """Recursively convert non-serializable types in a dict/list."""
+    """Convertit récursivement les types non-sérialisables."""
     if isinstance(obj, dict):
         return {k: serialize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -34,27 +74,189 @@ def serialize_for_json(obj):
         return obj.isoformat()
     elif isinstance(obj, Decimal):
         return float(obj)
-    else:
-        return obj
+    return obj
 
 
+# ─────────────────────────────────────────────
+# Notification Push Firebase
+# ─────────────────────────────────────────────
+async def send_push_notification(user_id: int, title: str, body: str, data: dict = None):
+    """
+    Récupère le token FCM de l'utilisateur en base et envoie une notification.
+    data = dict pour la navigation Flutter, ex: {'type': 'game_won', 'game_id': '42'}
+    """
+    try:
+        conn   = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT fcm_token FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not user or not user.get('fcm_token'):
+            logger.warning(f"Pas de FCM token pour user {user_id}")
+            return False
+
+        message = fcm_messaging.Message(
+            notification=fcm_messaging.Notification(title=title, body=body),
+            data={k: str(v) for k, v in (data or {}).items()},
+            token=user['fcm_token'],
+            android=fcm_messaging.AndroidConfig(
+                priority='high',
+                notification=fcm_messaging.AndroidNotification(
+                    sound='default',
+                    channel_id='guess_number_channel',
+                ),
+            ),
+            apns=fcm_messaging.APNSConfig(
+                payload=fcm_messaging.APNSPayload(
+                    aps=fcm_messaging.Aps(sound='default', badge=1),
+                ),
+            ),
+        )
+
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: fcm_messaging.send(message)
+        )
+        logger.info(f"✅ Push envoyé à user {user_id}: {response}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Erreur push user {user_id}: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────
+# Notification Email Admin
+# ─────────────────────────────────────────────
+async def send_withdrawal_notification(user_info: dict):
+    """Envoie un email HTML à l'admin pour chaque demande de retrait."""
+    try:
+        subject = f"🔄 Demande de retrait - {user_info['username']}"
+
+        body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+
+            <div style="background-color: #1a1a2e; padding: 20px; border-radius: 10px 10px 0 0;">
+                <h2 style="color: #FFD700; margin: 0;">🎮 Guess Number Game</h2>
+                <p style="color: #aaa; margin: 5px 0 0;">Nouvelle demande de retrait</p>
+            </div>
+
+            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 0 0 10px 10px; border: 1px solid #ddd;">
+
+                <h3 style="color: #333; border-bottom: 2px solid #FFD700; padding-bottom: 5px;">
+                    👤 Informations utilisateur
+                </h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px; color: #555; width: 40%;"><strong>Nom d'utilisateur :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info['username']}</td>
+                    </tr>
+                    <tr style="background-color: #f0f0f0;">
+                        <td style="padding: 8px; color: #555;"><strong>Email :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info.get('email', 'Non renseigné')}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; color: #555;"><strong>ID utilisateur :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info['user_id']}</td>
+                    </tr>
+                    <tr style="background-color: #f0f0f0;">
+                        <td style="padding: 8px; color: #555;"><strong>Solde après retrait :</strong></td>
+                        <td style="padding: 8px; color: #c0392b;"><strong>{user_info['current_balance']:,.0f} XOF</strong></td>
+                    </tr>
+                </table>
+
+                <h3 style="color: #333; border-bottom: 2px solid #FFD700; padding-bottom: 5px; margin-top: 20px;">
+                    💰 Détails du retrait
+                </h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px; color: #555; width: 40%;"><strong>Montant :</strong></td>
+                        <td style="padding: 8px; color: #27ae60;"><strong>{user_info['amount']:,.0f} XOF</strong></td>
+                    </tr>
+                    <tr style="background-color: #f0f0f0;">
+                        <td style="padding: 8px; color: #555;"><strong>Téléphone :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info['phone']}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; color: #555;"><strong>Opérateur :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info['provider']}</td>
+                    </tr>
+                    <tr style="background-color: #f0f0f0;">
+                        <td style="padding: 8px; color: #555;"><strong>Date :</strong></td>
+                        <td style="padding: 8px; color: #222;">{user_info['date']}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px; color: #555;"><strong>Transaction ID :</strong></td>
+                        <td style="padding: 8px; color: #2980b9; font-family: monospace;">{user_info['transaction_id']}</td>
+                    </tr>
+                </table>
+
+                <div style="margin-top: 20px; background-color: #fff3cd; border: 1px solid #ffc107;
+                            border-radius: 8px; padding: 15px;">
+                    <p style="margin: 0; color: #856404;">
+                        📱 <strong>Action requise :</strong> Veuillez traiter ce retrait manuellement
+                        via votre interface Mobile Money et confirmer dans le tableau de bord admin.
+                    </p>
+                </div>
+
+                <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+                <p style="color: #999; font-size: 11px; text-align: center;">
+                    Message automatique envoyé depuis Guess Number Game — Ne pas répondre à cet email.
+                </p>
+            </div>
+
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg['From']    = EMAIL_ADMIN
+        msg['To']      = EMAIL_ADMIN
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+
+        # Envoi via Gmail SMTP (exécuté dans un thread pour ne pas bloquer)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _smtp_send, msg)
+
+        logger.info(f"✅ Email de retrait envoyé pour {user_info['username']}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Erreur envoi email: {e}")
+        return False
+
+
+def _smtp_send(msg):
+    """Fonction synchrone pour l'envoi SMTP (appelée dans un executor)."""
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(EMAIL_ADMIN, EMAIL_PASSWORD)
+    server.send_message(msg)
+    server.quit()
+
+
+# ─────────────────────────────────────────────
+# Lifespan (startup / shutdown)
+# ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info("Starting up...")
     init_database()
     logger.info("Database initialized")
 
-    # Créer le compte plateforme si absent
+    init_firebase_admin()  # ← Initialisation Firebase Admin
+
     ensure_platform_user()
 
-    # Démarrer le scheduler de parties automatiques
     bot_task = asyncio.create_task(bot_scheduler())
     logger.info("Bot scheduler démarré")
 
     yield
 
-    # Shutdown
     bot_task.cancel()
     try:
         await bot_task
@@ -64,6 +266,10 @@ async def lifespan(app: FastAPI):
     close_db_connections()
     logger.info("Database connections closed")
 
+
+# ─────────────────────────────────────────────
+# App
+# ─────────────────────────────────────────────
 app = FastAPI(
     title="Guess Number Game API",
     description="Multiplayer number guessing game backend",
@@ -71,7 +277,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS for Flutter web
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -87,7 +292,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health check endpoint
+
+# ─────────────────────────────────────────────
+# Auth dependency
+# ─────────────────────────────────────────────
+async def get_current_user(request: Request):
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Not authenticated - No Authorization header")
+
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization header format. Use 'Bearer <token>'")
+
+    token   = parts[1]
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    conn = cursor = None
+    try:
+        conn   = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE id = %s", (payload.get('user_id'),))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        user.pop('password_hash', None)
+        return user
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting current user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        if cursor: cursor.close()
+        if conn:   conn.close()
+
+
+# ─────────────────────────────────────────────
+# Endpoints de base
+# ─────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {
@@ -95,147 +342,187 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "endpoints": [
-            "/health",
-            "/api/register",
-            "/api/login",
-            "/api/games/create",
-            "/api/games/join",
-            "/api/games/available",
-            "/ws/{game_id}/{token}"
+            "/health", "/api/register", "/api/login",
+            "/api/games/create", "/api/games/join",
+            "/api/games/available", "/ws/{game_id}/{token}"
         ]
     }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for Railway and monitoring"""
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.fetchone()
         cursor.close()
         conn.close()
-        
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "timestamp": datetime.now().isoformat()
-        }
+        return {"status": "healthy", "database": "connected", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "database": "disconnected",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-        )
+        return JSONResponse(status_code=503, content={
+            "status": "unhealthy", "database": "disconnected",
+            "error": str(e), "timestamp": datetime.now().isoformat()
+        })
 
-# Authentication dependency
-async def get_current_user(request: Request):
-    auth_header = request.headers.get('Authorization')
-    
-    if not auth_header:
-        raise HTTPException(status_code=401, detail="Not authenticated - No Authorization header")
-    
-    parts = auth_header.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization header format. Use 'Bearer <token>'")
-    
-    token = parts[1]
-    payload = decode_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    conn = None
-    cursor = None
+
+# ─────────────────────────────────────────────
+# Auth endpoints
+# ─────────────────────────────────────────────
+@app.post("/api/register")
+async def register(user_data: UserCreate):
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM users WHERE id = %s", (payload.get('user_id'),))
-        user = cursor.fetchone()
-        
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        
-        user.pop('password_hash', None)
-        return user
+
+        cursor.execute("SELECT id FROM users WHERE username = %s", (user_data.username,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Username already exists")
+
+        password_hash = get_password_hash(user_data.password)
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, balance) VALUES (%s, %s, 0)",
+            (user_data.username, password_hash)
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        logger.info(f"New user registered: {user_data.username} (ID: {user_id})")
+        return {"message": "User created successfully", "user_id": user_id}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting current user: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed")
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
+
+@app.post("/api/login")
+async def login(user_data: UserLogin):
+    conn = cursor = None
+    try:
+        conn   = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT * FROM users WHERE username = %s", (user_data.username,))
+        user = cursor.fetchone()
+
+        if not user or not verify_password(user_data.password, user['password_hash']):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        token = create_access_token({"user_id": user['id'], "username": user['username']})
+        logger.info(f"User logged in: {user_data.username}")
+
+        return {
+            "access_token": token,
+            "token_type":   "bearer",
+            "user_id":      user['id'],
+            "username":     user['username'],
+            "balance":      float(user['balance'])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Login failed")
+    finally:
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 @app.get("/api/verify-token")
 async def verify_token(current_user: dict = Depends(get_current_user)):
     return {
-        "valid": True, 
-        "user_id": current_user['id'], 
+        "valid":    True,
+        "user_id":  current_user['id'],
         "username": current_user['username'],
-        "balance": current_user['balance']
+        "balance":  current_user['balance']
     }
 
-# DEPOSIT VIA FEEXPAY (webhook callback)
+
+# ─────────────────────────────────────────────
+# FCM Token
+# ─────────────────────────────────────────────
+@app.post("/api/user/fcm-token")
+async def save_fcm_token(request: Request, current_user: dict = Depends(get_current_user)):
+    """Sauvegarder le token FCM après login Flutter."""
+    data      = await request.json()
+    fcm_token = data.get('fcm_token')
+
+    if not fcm_token:
+        raise HTTPException(status_code=400, detail="fcm_token manquant")
+
+    conn   = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET fcm_token = %s WHERE id = %s",
+        (fcm_token, current_user['id'])
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    logger.info(f"FCM token sauvegardé pour user {current_user['id']}")
+    return {"success": True}
+
+
+# ─────────────────────────────────────────────
+# Dépôt (FeexPay)
+# ─────────────────────────────────────────────
 @app.post("/api/feexpay/webhook")
 async def feexpay_webhook(request: Request):
-    """Webhook called by FeexPay after payment confirmation"""
     try:
-        data = await request.json()
+        data           = await request.json()
         logger.info(f"FeexPay webhook received: {data}")
-        
         transaction_id = data.get('transaction_id')
-        amount = data.get('amount')
-        user_id = data.get('user_id')
-        status = data.get('status')
-        
+        amount         = data.get('amount')
+        user_id        = data.get('user_id')
+        status         = data.get('status')
+
         if status == 'success' and user_id and amount:
-            conn = get_db_connection()
+            conn   = get_db_connection()
             cursor = conn.cursor()
-            
-            # Check if already processed
+
             cursor.execute("SELECT id FROM transactions WHERE reference = %s", (transaction_id,))
             if cursor.fetchone():
                 return {"status": "already_processed"}
-            
-            # Credit user balance
+
             cursor.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (amount, user_id))
-            
-            # Record transaction
             cursor.execute("""
                 INSERT INTO transactions (user_id, amount, type, reference, status)
                 VALUES (%s, %s, 'deposit', %s, 'completed')
             """, (user_id, amount, transaction_id))
-            
+
             conn.commit()
             cursor.close()
             conn.close()
-            
             logger.info(f"Deposit confirmed: User {user_id}, Amount {amount}")
+
+            # ── Push notification dépôt confirmé ──
+            asyncio.create_task(send_push_notification(
+                user_id=int(user_id),
+                title="💰 Dépôt confirmé !",
+                body=f"Votre dépôt de {float(amount):,.0f} XOF a été crédité sur votre compte.",
+                data={'type': 'deposit_confirmed'}
+            ))
+
             return {"status": "success"}
-        
+
         return {"status": "ignored"}
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return JSONResponse(status_code=500, content={"status": "error"})
 
-# Initiate FeexPay payment (frontend will call FeexPay SDK directly)
 @app.post("/api/deposit/initiate")
 async def initiate_deposit(deposit: MobileMoneyDeposit, current_user: dict = Depends(get_current_user)):
-    """Create a pending deposit record before FeexPay payment"""
     if deposit.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    
     if deposit.amount < 1000:
         raise HTTPException(status_code=400, detail="Minimum deposit is 1000 XOF")
-    
+
     transaction_id = f"DEP_{int(datetime.now().timestamp())}_{current_user['id']}"
-    
-    conn = get_db_connection()
+
+    conn   = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO transactions (user_id, amount, type, reference, status)
@@ -244,79 +531,132 @@ async def initiate_deposit(deposit: MobileMoneyDeposit, current_user: dict = Dep
     conn.commit()
     cursor.close()
     conn.close()
-    
+
     return {
-        "success": True,
+        "success":        True,
         "transaction_id": transaction_id,
-        "amount": deposit.amount,
-        "user_id": current_user['id']
+        "amount":         deposit.amount,
+        "user_id":        current_user['id']
     }
 
-# Withdrawal (keep for withdrawals)
+
+# ─────────────────────────────────────────────
+# Retrait ← VERSION COMPLÈTE AVEC EMAIL + PUSH
+# ─────────────────────────────────────────────
 @app.post("/api/withdraw")
 async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
+    # ── Validations ──────────────────────────────────
     if withdraw.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    
+
     if withdraw.amount < 1000:
         raise HTTPException(status_code=400, detail="Minimum withdrawal is 1000 XOF")
-    
+
     if float(current_user['balance']) < withdraw.amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
-    
+
     transaction_id = f"WDR_{int(datetime.now().timestamp())}_{current_user['id']}"
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Deduct balance
-    cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s", (withdraw.amount, current_user['id']))
-    
-    # Record transaction
-    cursor.execute("""
-        INSERT INTO transactions (user_id, amount, type, reference, status)
-        VALUES (%s, %s, 'withdrawal', %s, 'completed')
-    """, (current_user['id'], -withdraw.amount, transaction_id))
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
-    
-    logger.info(f"Withdrawal: User {current_user['id']}, Amount {withdraw.amount}")
-    
+    new_balance    = float(current_user['balance']) - withdraw.amount
+
+    conn = cursor = None
+    try:
+        conn   = get_db_connection()
+        cursor = conn.cursor()
+
+        # 1. Déduire le solde
+        cursor.execute(
+            "UPDATE users SET balance = balance - %s WHERE id = %s",
+            (withdraw.amount, current_user['id'])
+        )
+
+        # 2. Enregistrer dans transactions
+        cursor.execute("""
+            INSERT INTO transactions (user_id, amount, type, reference, status)
+            VALUES (%s, %s, 'withdrawal', %s, 'pending')
+        """, (current_user['id'], -withdraw.amount, transaction_id))
+
+        # 3. Enregistrer dans withdrawal_requests
+        cursor.execute("""
+            INSERT INTO withdrawal_requests
+                (user_id, phone_number, amount, provider, transaction_id, status)
+            VALUES (%s, %s, %s, %s, %s, 'pending')
+        """, (
+            current_user['id'],
+            withdraw.phone_number,
+            withdraw.amount,
+            withdraw.provider,
+            transaction_id
+        ))
+
+        conn.commit()
+        logger.info(f"Withdrawal request: User {current_user['id']}, Amount {withdraw.amount}")
+
+    except Exception as e:
+        if conn: conn.rollback()
+        logger.error(f"Withdrawal DB error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process withdrawal")
+    finally:
+        if cursor: cursor.close()
+        if conn:   conn.close()
+
+    # 4. Email à l'admin (asynchrone)
+    user_info = {
+        'username':        current_user['username'],
+        'email':           current_user.get('email', 'Non renseigné'),
+        'user_id':         current_user['id'],
+        'current_balance': new_balance,
+        'amount':          withdraw.amount,
+        'phone':           withdraw.phone_number,
+        'provider':        withdraw.provider,
+        'date':            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        'transaction_id':  transaction_id
+    }
+    asyncio.create_task(send_withdrawal_notification(user_info))
+
+    # 5. Push notification retrait en cours
+    asyncio.create_task(send_push_notification(
+        user_id=current_user['id'],
+        title="🔄 Retrait en cours",
+        body=f"Votre demande de retrait de {withdraw.amount:,.0f} XOF est en cours de traitement.",
+        data={'type': 'withdrawal_pending', 'transaction_id': transaction_id}
+    ))
+
     return {
-        "success": True,
+        "success":        True,
         "transaction_id": transaction_id,
-        "message": "Withdrawal processed successfully"
+        "new_balance":    new_balance,
+        "message":        "Demande de retrait enregistrée. Vous serez notifié une fois traité."
     }
 
-# Transaction history
+
+# ─────────────────────────────────────────────
+# Historique & Stats
+# ─────────────────────────────────────────────
 @app.get("/api/user/transactions")
 async def get_transactions(current_user: dict = Depends(get_current_user)):
-    conn = get_db_connection()
+    conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("""
-        SELECT * FROM transactions 
-        WHERE user_id = %s 
-        ORDER BY created_at DESC 
+        SELECT * FROM transactions
+        WHERE user_id = %s
+        ORDER BY created_at DESC
         LIMIT 50
     """, (current_user['id'],))
-    
     transactions = cursor.fetchall()
     cursor.close()
     conn.close()
-    
-    return {"transactions": transactions}
+    return {"transactions": serialize_for_json(transactions)}
 
-# User statistics
+@app.get("/api/user/balance")
+async def get_balance(current_user: dict = Depends(get_current_user)):
+    return {"balance": float(current_user['balance'])}
+
 @app.get("/api/user/stats")
 async def get_user_stats(current_user: dict = Depends(get_current_user)):
-    conn = get_db_connection()
+    conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("""
-        SELECT 
+        SELECT
             COUNT(DISTINCT gp.game_id) as total_games,
             SUM(CASE WHEN g.winner_id = %s THEN 1 ELSE 0 END) as wins,
             COALESCE(SUM(CASE WHEN g.winner_id = %s THEN g.total_pot * 0.75 ELSE 0 END), 0) as total_won
@@ -324,27 +664,25 @@ async def get_user_stats(current_user: dict = Depends(get_current_user)):
         JOIN games g ON gp.game_id = g.id
         WHERE gp.user_id = %s
     """, (current_user['id'], current_user['id'], current_user['id']))
-    
     stats = cursor.fetchone()
     cursor.close()
     conn.close()
-    
-    # Assurer que les valeurs sont des nombres
+
+    total = stats['total_games'] or 0
+    wins  = stats['wins']        or 0
     return {
-        "total_games": stats['total_games'] or 0,
-        "wins": stats['wins'] or 0,
-        "total_won": float(stats['total_won']) if stats['total_won'] else 0.0,
-        "win_rate": (stats['wins'] / stats['total_games'] * 100) if stats['total_games'] and stats['total_games'] > 0 else 0.0
+        "total_games": total,
+        "wins":        wins,
+        "total_won":   float(stats['total_won']) if stats['total_won'] else 0.0,
+        "win_rate":    (wins / total * 100) if total > 0 else 0.0
     }
 
-# Leaderboard
 @app.get("/api/leaderboard")
 async def get_leaderboard(limit: int = 10):
-    conn = get_db_connection()
+    conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("""
-        SELECT 
+        SELECT
             u.id,
             u.username,
             COUNT(CASE WHEN g.winner_id = u.id THEN 1 END) as wins,
@@ -356,247 +694,226 @@ async def get_leaderboard(limit: int = 10):
         ORDER BY wins DESC
         LIMIT %s
     """, (limit,))
-    
     leaderboard = cursor.fetchall()
     cursor.close()
     conn.close()
-    
-    return leaderboard
+    return serialize_for_json(leaderboard)
 
-# User endpoints
-@app.post("/api/register")
-async def register(user_data: UserCreate):
-    conn = None
-    cursor = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("SELECT id FROM users WHERE username = %s", (user_data.username,))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Username already exists")
-        
-        password_hash = get_password_hash(user_data.password)
-        cursor.execute(
-            "INSERT INTO users (username, password_hash, balance) VALUES (%s, %s, 0)",
-            (user_data.username, password_hash)
-        )
-        conn.commit()
-        user_id = cursor.lastrowid
-        
-        logger.info(f"New user registered: {user_data.username} (ID: {user_id})")
-        
-        return {"message": "User created successfully", "user_id": user_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        raise HTTPException(status_code=500, detail="Registration failed")
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
 
-@app.post("/api/login")
-async def login(user_data: UserLogin):
-    conn = None
-    cursor = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("SELECT * FROM users WHERE username = %s", (user_data.username,))
-        user = cursor.fetchone()
-        
-        if not user or not verify_password(user_data.password, user['password_hash']):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        token = create_access_token({"user_id": user['id'], "username": user['username']})
-        
-        logger.info(f"User logged in: {user_data.username}")
-        
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user_id": user['id'],
-            "username": user['username'],
-            "balance": float(user['balance'])
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail="Login failed")
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+# ─────────────────────────────────────────────
+# Retraits en attente (admin)
+# ─────────────────────────────────────────────
+@app.get("/api/admin/withdrawals")
+async def get_pending_withdrawals(current_user: dict = Depends(get_current_user)):
+    """Liste des retraits en attente — accessible uniquement à l'admin."""
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
 
-@app.get("/api/user/balance")
-async def get_balance(current_user: dict = Depends(get_current_user)):
-    return {"balance": float(current_user['balance'])}
+    conn   = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT wr.*, u.username, u.email
+        FROM withdrawal_requests wr
+        JOIN users u ON wr.user_id = u.id
+        WHERE wr.status = 'pending'
+        ORDER BY wr.created_at DESC
+    """)
+    withdrawals = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return {"withdrawals": serialize_for_json(withdrawals)}
 
-# Game endpoints
+@app.post("/api/admin/withdrawals/{withdrawal_id}/confirm")
+async def confirm_withdrawal(withdrawal_id: int, current_user: dict = Depends(get_current_user)):
+    """Marquer un retrait comme traité."""
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    conn   = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    # Récupérer les infos du retrait avant commit pour le push
+    cursor.execute(
+        "SELECT user_id, amount FROM withdrawal_requests WHERE id = %s",
+        (withdrawal_id,)
+    )
+    wr = cursor.fetchone()
+
+    cursor.execute("""
+        UPDATE withdrawal_requests
+        SET status = 'completed', processed_at = NOW()
+        WHERE id = %s AND status = 'pending'
+    """, (withdrawal_id,))
+
+    # Mettre à jour aussi la transaction
+    cursor.execute("""
+        UPDATE transactions t
+        JOIN withdrawal_requests wr ON t.reference = wr.transaction_id
+        SET t.status = 'completed'
+        WHERE wr.id = %s
+    """, (withdrawal_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    # ── Push notification retrait confirmé ──
+    if wr:
+        asyncio.create_task(send_push_notification(
+            user_id=wr['user_id'],
+            title="✅ Retrait confirmé !",
+            body=f"Votre retrait de {float(wr['amount']):,.0f} XOF a été traité avec succès.",
+            data={'type': 'withdrawal_confirmed'}
+        ))
+
+    return {"success": True, "message": "Retrait confirmé"}
+
+
+# ─────────────────────────────────────────────
+# Jeux
+# ─────────────────────────────────────────────
 @app.post("/api/games/create")
 async def create_game(game_data: GameCreate, current_user: dict = Depends(get_current_user)):
     if game_data.bet_amount <= 0:
         raise HTTPException(status_code=400, detail="Bet amount must be positive")
-    
     if float(current_user['balance']) < game_data.bet_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
-    
-    conn = None
-    cursor = None
+
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s", 
+
+        cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s",
                        (game_data.bet_amount, current_user['id']))
-        
+
         cursor.execute("""
             INSERT INTO games (creator_id, bet_amount, total_pot, status)
             VALUES (%s, %s, %s, 'waiting')
         """, (current_user['id'], game_data.bet_amount, game_data.bet_amount))
-        
         game_id = cursor.lastrowid
-        
+
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'bet', %s, 'completed')
         """, (current_user['id'], game_data.bet_amount, f"game_{game_id}_bet"))
-        
+
         conn.commit()
-        
         logger.info(f"Game created: ID {game_id} by user {current_user['id']}")
-        
         return {"game_id": game_id, "message": "Game created successfully"}
     except Exception as e:
-        if conn:
-            conn.rollback()
+        if conn: conn.rollback()
         logger.error(f"Create game error: {e}")
         raise HTTPException(status_code=500, detail="Failed to create game")
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 @app.post("/api/games/join")
 async def join_game(join_data: JoinGame, current_user: dict = Depends(get_current_user)):
     if join_data.guessed_number < 1 or join_data.guessed_number > 100:
         raise HTTPException(status_code=400, detail="Number must be between 1 and 100")
-    
-    conn = None
-    cursor = None
+
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("SELECT * FROM games WHERE id = %s AND status = 'waiting' FOR UPDATE", 
-                      (join_data.game_id,))
+
+        cursor.execute(
+            "SELECT * FROM games WHERE id = %s AND status = 'waiting' FOR UPDATE",
+            (join_data.game_id,)
+        )
         game = cursor.fetchone()
-        
         if not game:
             raise HTTPException(status_code=404, detail="Game not found or already started")
-        
+
         if float(current_user['balance']) < float(game['bet_amount']):
             raise HTTPException(status_code=400, detail="Insufficient balance")
-        
-        cursor.execute("SELECT id FROM game_participants WHERE game_id = %s AND user_id = %s",
-                       (join_data.game_id, current_user['id']))
+
+        cursor.execute(
+            "SELECT id FROM game_participants WHERE game_id = %s AND user_id = %s",
+            (join_data.game_id, current_user['id'])
+        )
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Already joined this game")
-        
+
         cursor.execute("UPDATE users SET balance = balance - %s WHERE id = %s",
                        (float(game['bet_amount']), current_user['id']))
-        
+
         cursor.execute("""
             INSERT INTO game_participants (game_id, user_id, guessed_number)
             VALUES (%s, %s, %s)
         """, (join_data.game_id, current_user['id'], join_data.guessed_number))
-        
-        cursor.execute("""
-            UPDATE games SET total_pot = total_pot + %s WHERE id = %s
-        """, (float(game['bet_amount']), join_data.game_id))
-        
+
+        cursor.execute("UPDATE games SET total_pot = total_pot + %s WHERE id = %s",
+                       (float(game['bet_amount']), join_data.game_id))
+
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'bet', %s, 'completed')
         """, (current_user['id'], float(game['bet_amount']), f"game_{join_data.game_id}_bet"))
-        
-        cursor.execute("SELECT COUNT(*) as count FROM game_participants WHERE game_id = %s", 
-                      (join_data.game_id,))
+
+        cursor.execute(
+            "SELECT COUNT(*) as count FROM game_participants WHERE game_id = %s",
+            (join_data.game_id,)
+        )
         participant_count = cursor.fetchone()['count']
-        
+
         conn.commit()
-        
         logger.info(f"User {current_user['id']} joined game {join_data.game_id}")
-        
+
+        # ── Push notification au créateur de la partie ──
+        if game['creator_id'] != current_user['id']:
+            asyncio.create_task(send_push_notification(
+                user_id=game['creator_id'],
+                title="👤 Nouveau joueur !",
+                body=f"{current_user['username']} a rejoint votre partie.",
+                data={'type': 'player_joined', 'game_id': str(join_data.game_id)}
+            ))
+
         if participant_count >= 2:
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("UPDATE games SET status = 'active' WHERE id = %s", 
-                          (join_data.game_id,))
+            cursor2 = conn.cursor()
+            cursor2.execute("UPDATE games SET status = 'active' WHERE id = %s", (join_data.game_id,))
             conn.commit()
-            
+            cursor2.close()
             asyncio.create_task(start_game_timer(join_data.game_id))
-        
+
         return {"message": "Joined game successfully"}
     except HTTPException:
         raise
     except Exception as e:
-        if conn:
-            conn.rollback()
+        if conn: conn.rollback()
         logger.error(f"Join game error: {e}")
         raise HTTPException(status_code=500, detail="Failed to join game")
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 async def start_game_timer(game_id: int):
-    """Timer 30s pour les parties entre vrais joueurs."""
     from .bot_service import _notify_game_result
-
     try:
         for i in range(30, 0, -1):
             logger.info(f"Partie {game_id} — fin dans {i}s")
-            await manager.broadcast_to_game(game_id, {
-                'type': 'timer',
-                'seconds': i
-            })
+            await manager.broadcast_to_game(game_id, {'type': 'timer', 'seconds': i})
             await asyncio.sleep(1)
 
         result = determine_game_winner(game_id)
-
         if result:
-            # Notifications enrichies cross-screen
             await _notify_game_result(game_id, result)
-            logger.info(
-                f"Partie {game_id} terminée — "
-                f"gagnant: {result['winner_id']}, numéro: {result['winning_number']}"
-            )
+            logger.info(f"Partie {game_id} terminée — gagnant: {result['winner_id']}")
     except Exception as e:
         logger.error(f"Erreur timer partie {game_id}: {e}")
 
 @app.get("/api/games/available")
 async def get_available_games(current_user: dict = Depends(get_current_user)):
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
-            SELECT g.*, 
+            SELECT g.*,
                    COUNT(gp.id) as participants_count,
-                   CASE 
-                       WHEN u.id = 1 THEN '🤖 Bot'
-                       ELSE COALESCE(u.username, 'Unknown')
-                   END as creator_name
+                   COALESCE(u.username, 'Unknown') as creator_name
             FROM games g
             LEFT JOIN game_participants gp ON g.id = gp.game_id
             LEFT JOIN users u ON g.creator_id = u.id
@@ -604,35 +921,26 @@ async def get_available_games(current_user: dict = Depends(get_current_user)):
             GROUP BY g.id
             ORDER BY g.created_at DESC
         """)
-        
         games = cursor.fetchall()
-        
         for game in games:
-            if 'bet_amount' in game:
-                game['bet_amount'] = float(game['bet_amount'])
-            if 'total_pot' in game:
-                game['total_pot'] = float(game['total_pot'])
-        
+            if 'bet_amount' in game: game['bet_amount'] = float(game['bet_amount'])
+            if 'total_pot'  in game: game['total_pot']  = float(game['total_pot'])
         return games
     except Exception as e:
         logger.error(f"Get available games error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch games")
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
 @app.get("/api/games/{game_id}/details")
 async def get_game_details(game_id: int):
-    conn = None
-    cursor = None
+    conn = cursor = None
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
-            SELECT g.*, 
+            SELECT g.*,
                    COUNT(gp.id) as participants_count,
                    GROUP_CONCAT(CONCAT(u.username, ':', gp.guessed_number)) as participants
             FROM games g
@@ -641,17 +949,11 @@ async def get_game_details(game_id: int):
             WHERE g.id = %s
             GROUP BY g.id
         """, (game_id,))
-        
         game = cursor.fetchone()
-        
         if not game:
             raise HTTPException(status_code=404, detail="Game not found")
-        
-        if 'bet_amount' in game and game['bet_amount']:
-            game['bet_amount'] = float(game['bet_amount'])
-        if 'total_pot' in game and game['total_pot']:
-            game['total_pot'] = float(game['total_pot'])
-        
+        if 'bet_amount' in game and game['bet_amount']: game['bet_amount'] = float(game['bet_amount'])
+        if 'total_pot'  in game and game['total_pot']:  game['total_pot']  = float(game['total_pot'])
         return game
     except HTTPException:
         raise
@@ -659,12 +961,13 @@ async def get_game_details(game_id: int):
         logger.error(f"Get game details error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch game details")
     finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if cursor: cursor.close()
+        if conn:   conn.close()
 
-# WebSocket endpoint
+
+# ─────────────────────────────────────────────
+# WebSocket
+# ─────────────────────────────────────────────
 @app.websocket("/ws/{game_id}/{token}")
 async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
     user = None
@@ -674,7 +977,7 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
             await websocket.close(code=1008, reason="Token invalide")
             return
 
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM users WHERE id = %s", (payload.get('user_id'),))
         user = cursor.fetchone()
@@ -686,19 +989,16 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
             return
 
         logger.info(f"WS connecté: user {user['id']} → partie {game_id}")
-
     except Exception as e:
         logger.error(f"WS auth error: {e}")
         await websocket.close(code=1008, reason="Authentification échouée")
         return
 
-    # Connexion avec user_id pour les notifications personnelles
     await manager.connect(game_id, websocket, user_id=user['id'])
 
     try:
-        conn = get_db_connection()
+        conn   = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-
         cursor.execute("""
             SELECT g.*,
                    COUNT(gp.id) as participants_count,
@@ -709,7 +1009,6 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
             WHERE g.id = %s
             GROUP BY g.id
         """, (game_id,))
-
         game_state = cursor.fetchone()
         cursor.close()
         conn.close()
@@ -717,10 +1016,7 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
         if game_state:
             game_state = serialize_for_json(game_state)
 
-        await websocket.send_json({
-            'type': 'game_state',
-            'data': game_state
-        })
+        await websocket.send_json({'type': 'game_state', 'data': game_state})
 
         while True:
             try:
@@ -731,10 +1027,16 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
                 await websocket.send_json({'type': 'heartbeat'})
             except WebSocketDisconnect:
                 break
-
     except WebSocketDisconnect:
         logger.info(f"WS déconnecté: partie {game_id}")
     except Exception as e:
         logger.error(f"WS error: {e}")
     finally:
         manager.disconnect(game_id, websocket, user_id=user['id'] if user else None)
+
+
+# ============================================================
+# SQL — À exécuter UNE SEULE FOIS sur Railway
+# ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
+# CREATE INDEX idx_fcm_token ON users(fcm_token);
+# ============================================================
