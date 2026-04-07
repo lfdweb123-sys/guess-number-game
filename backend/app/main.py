@@ -1117,30 +1117,34 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
 // À AJOUTER dans main.py (FastAPI) — endpoint change-password
 // ═══════════════════════════════════════════════════════════════
  
+# ============================================================
+# ENDPOINT: Changer le mot de passe
+# ============================================================
+
 @app.post("/api/change-password")
 async def change_password(request: Request):
     data = await request.json()
     username = data.get('username', '').strip()
     old_password = data.get('old_password', '').strip()
     new_password = data.get('new_password', '').strip()
- 
+
     if not username or not old_password or not new_password:
         raise HTTPException(status_code=400, detail="Champs manquants")
- 
+
     if len(new_password) < 4:
-        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court")
- 
+        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court (minimum 4 caractères)")
+
     conn = cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
- 
+
         cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
- 
+
         if not user or not verify_password(old_password, user['password_hash']):
             raise HTTPException(status_code=401, detail="Identifiants incorrects")
- 
+
         new_hash = get_password_hash(new_password)
         cursor.execute(
             "UPDATE users SET password_hash = %s WHERE id = %s",
@@ -1148,16 +1152,30 @@ async def change_password(request: Request):
         )
         conn.commit()
         logger.info(f"Mot de passe changé pour {username}")
+
+        # Optionnel: Envoyer une notification push à l'utilisateur
+        try:
+            asyncio.create_task(send_push_notification(
+                user_id=user['id'],
+                title="🔐 Mot de passe modifié",
+                body="Votre mot de passe a été changé avec succès.",
+                data={'type': 'password_changed'}
+            ))
+        except Exception as push_error:
+            logger.warning(f"Push notification failed: {push_error}")
+
         return {"success": True, "message": "Mot de passe modifié avec succès"}
- 
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Change password error: {e}")
         raise HTTPException(status_code=500, detail="Erreur serveur")
     finally:
-        if cursor: cursor.close()
-        if conn: conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
