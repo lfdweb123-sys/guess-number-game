@@ -912,39 +912,54 @@ async def start_game_timer(game_id: int):
             winner_id = result['winner_id']
             winning_number = result['winning_number']
             winner_amount = float(result['winner_amount'])
-            
-            # Récupérer tous les participants
+
+            # Récupérer tous les participants AVEC leur numéro joué
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
             cursor.execute("""
-                SELECT DISTINCT user_id FROM game_participants WHERE game_id = %s
+                SELECT gp.user_id, gp.guessed_number, u.username
+                FROM game_participants gp
+                JOIN users u ON gp.user_id = u.id
+                WHERE gp.game_id = %s
             """, (game_id,))
             participants = cursor.fetchall()
+
+            # Récupérer le username du gagnant
+            winner_username = next(
+                (p['username'] for p in participants if p['user_id'] == winner_id),
+                'Inconnu'
+            )
             cursor.close()
             conn.close()
-            
-            # Envoyer le résultat à chaque joueur individuellement
-            for participant in participants:
-                user_id = participant['user_id']
-                is_winner = (user_id == winner_id)
-                
-                message = {
-                    'type': 'game_ended',
-                    'winner_id': winner_id,
-                    'winning_number': winning_number,
-                    'winner_amount': winner_amount,
-                    'is_winner': is_winner
-                }
-                
-                # Envoyer via le canal personnel
-                await manager.send_to_user(user_id, message)
-            
-            # Notifications push
-            for participant in participants:
-                user_id = participant['user_id']
+
+            # ── Broadcast à TOUTE la partie en une seule fois ──
+            # Le front-end détermine lui-même s'il est gagnant ou perdant via winner_id
+            game_end_message = {
+                'type': 'game_ended',
+                'winner_id': winner_id,
+                'winner_username': winner_username,
+                'winning_number': winning_number,
+                'winner_amount': winner_amount,
+                'participants': [
+                    {
+                        'user_id': p['user_id'],
+                        'username': p['username'],
+                        'guessed_number': p['guessed_number']
+                    }
+                    for p in participants
+                ]
+            }
+
+            # Un seul broadcast — tous les joueurs reçoivent tout
+            await manager.broadcast_to_game(game_id, game_end_message)
+            logger.info(f"✅ game_ended broadcasté à toute la partie {game_id}")
+
+            # Push notifications
+            for p in participants:
+                user_id = p['user_id']
                 if user_id == winner_id:
                     asyncio.create_task(send_push_notification(
-                        user_id=winner_id,
+                        user_id=user_id,
                         title="🎉 FÉLICITATIONS !",
                         body=f"Vous avez gagné {winner_amount:,.0f} XOF !",
                         data={'type': 'game_won', 'game_id': str(game_id)}
@@ -956,12 +971,14 @@ async def start_game_timer(game_id: int):
                         body=f"Le numéro gagnant était {winning_number}. Meilleure chance !",
                         data={'type': 'game_lost', 'game_id': str(game_id)}
                     ))
-            
+
             await _notify_game_result(game_id, result)
-            logger.info(f"Partie {game_id} terminée — gagnant: {winner_id}, numéro: {winning_number}")
-            
+            logger.info(f"Partie {game_id} terminée — gagnant: {winner_id} ({winner_username}), numéro: {winning_number}")
+
     except Exception as e:
         logger.error(f"Erreur timer partie {game_id}: {e}")
+
+
 
 
 
