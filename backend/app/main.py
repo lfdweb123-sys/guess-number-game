@@ -1113,6 +1113,52 @@ async def websocket_endpoint(websocket: WebSocket, game_id: int, token: str):
         manager.disconnect(game_id, websocket, user_id=user['id'] if user else None)
 
 
+// ═══════════════════════════════════════════════════════════════
+// À AJOUTER dans main.py (FastAPI) — endpoint change-password
+// ═══════════════════════════════════════════════════════════════
+ 
+@app.post("/api/change-password")
+async def change_password(request: Request):
+    data = await request.json()
+    username = data.get('username', '').strip()
+    old_password = data.get('old_password', '').strip()
+    new_password = data.get('new_password', '').strip()
+ 
+    if not username or not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="Champs manquants")
+ 
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court")
+ 
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+ 
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+ 
+        if not user or not verify_password(old_password, user['password_hash']):
+            raise HTTPException(status_code=401, detail="Identifiants incorrects")
+ 
+        new_hash = get_password_hash(new_password)
+        cursor.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (new_hash, user['id'])
+        )
+        conn.commit()
+        logger.info(f"Mot de passe changé pour {username}")
+        return {"success": True, "message": "Mot de passe modifié avec succès"}
+ 
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change password error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    finally:
+        if cursor: cursor.close()
+        if conn: conn.close()
+
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
