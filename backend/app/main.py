@@ -488,6 +488,9 @@ async def login(user_data: UserLogin):
         if not user or not verify_password(user_data.password, user['password_hash']):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
+        if user.get('is_banned'):
+            raise HTTPException(status_code=403, detail="Account banned")
+
         token = create_access_token({"user_id": user['id'], "username": user['username']})
         logger.info(f"User logged in: {user_data.username}")
 
