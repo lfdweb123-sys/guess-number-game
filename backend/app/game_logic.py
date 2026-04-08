@@ -82,6 +82,7 @@ def determine_game_winner(game_id: int):
         total_pot = float(game['total_pot'])
         winner_amount, commission = calculate_payout(total_pot)
 
+        # ✅ CORRECTION: Appeler _finalize_game qui crédite le gagnant
         _finalize_game(cursor, conn, game_id, winning_number, winner_id, winner_amount, commission)
 
         return {
@@ -152,11 +153,7 @@ def determine_game_winner_with_bot(game_id: int):
         """, (winning_number, game_id, PLATFORM_USER_ID))
 
         # Résoudre normalement (le bot aura distance 0)
-        winner_id = calculate_winner(participants + [
-            {'user_id': PLATFORM_USER_ID, 'guessed_number': winning_number}
-        ] if not any(p['user_id'] == PLATFORM_USER_ID for p in participants)
-        else participants, winning_number)
-
+        winner_id = calculate_winner(participants, winning_number)
         total_pot = float(game['total_pot'])
         winner_amount, commission = calculate_payout(total_pot)
 
@@ -190,27 +187,25 @@ def _finalize_game(cursor, conn, game_id, winning_number, winner_id, winner_amou
         WHERE id = %s
     """, (winning_number, winner_id, game_id))
 
-    # Créditer le gagnant uniquement si c'est un vrai joueur
-    if winner_id != PLATFORM_USER_ID:
-        cursor.execute(
-            "UPDATE users SET balance = balance + %s WHERE id = %s",
-            (winner_amount, winner_id)
-        )
-        cursor.execute("""
-            INSERT INTO transactions (user_id, amount, type, reference, status)
-            VALUES (%s, %s, 'win', %s, 'completed')
-        """, (winner_id, winner_amount, f"game_{game_id}_win"))
-    else:
-        # La plateforme récupère sa mise + les mises des perdants
-        cursor.execute(
-            "UPDATE users SET balance = balance + %s WHERE id = %s",
-            (winner_amount, PLATFORM_USER_ID)
-        )
-
-    # Commission toujours vers la plateforme
+    # ✅ Créditer le gagnant (joueur réel ou bot)
+    cursor.execute(
+        "UPDATE users SET balance = balance + %s WHERE id = %s",
+        (winner_amount, winner_id)
+    )
+    
+    # ✅ Enregistrer la transaction de gain
     cursor.execute("""
         INSERT INTO transactions (user_id, amount, type, reference, status)
-        VALUES (%s, %s, 'commission', %s, 'completed')
-    """, (PLATFORM_USER_ID, commission, f"game_{game_id}_commission"))
+        VALUES (%s, %s, 'win', %s, 'completed')
+    """, (winner_id, winner_amount, f"game_{game_id}_win"))
+    
+    # ✅ Commission toujours vers la plateforme (si le gagnant n'est pas la plateforme)
+    # Note: La plateforme a déjà sa part via winner_amount si elle gagne
+    if winner_id != PLATFORM_USER_ID:
+        cursor.execute("""
+            INSERT INTO transactions (user_id, amount, type, reference, status)
+            VALUES (%s, %s, 'commission', %s, 'completed')
+        """, (PLATFORM_USER_ID, commission, f"game_{game_id}_commission"))
 
     conn.commit()
+    print(f"💰 Gain crédité: User {winner_id} a reçu {winner_amount} XOF")
