@@ -1706,17 +1706,61 @@ async def update_user_balance(user_id: int, request: Request, current_user: dict
 
 @app.delete("/api/admin/users/{user_id}")
 async def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    if current_user.get('username') != 'admin':
+    if current_user.get('username').lower() != 'admin':
         raise HTTPException(status_code=403, detail="Admin only")
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE id = %s AND username != 'admin'", (user_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    
+    try:
+        # Vérifier que ce n'est pas l'admin
+        cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user[0].lower() == 'admin':
+            raise HTTPException(status_code=403, detail="Cannot delete admin user")
+        
+        # 1. Supprimer les transactions
+        cursor.execute("DELETE FROM transactions WHERE user_id = %s", (user_id,))
+        
+        # 2. Supprimer les participants aux parties
+        cursor.execute("DELETE FROM game_participants WHERE user_id = %s", (user_id,))
+        
+        # 3. Supprimer les messages du chat
+        cursor.execute("DELETE FROM chat_messages WHERE user_id = %s", (user_id,))
+        
+        # 4. Supprimer les demandes de retrait
+        cursor.execute("DELETE FROM withdrawal_requests WHERE user_id = %s", (user_id,))
+        
+        # 5. Supprimer les dépôts mobile money
+        cursor.execute("DELETE FROM mobile_money_deposits WHERE user_id = %s", (user_id,))
+        
+        # 6. Supprimer les retraits mobile money
+        cursor.execute("DELETE FROM mobile_money_withdrawals WHERE user_id = %s", (user_id,))
+        
+        # 7. Mettre à jour les parties où l'utilisateur est créateur (mettre creator_id = NULL ou 1)
+        cursor.execute("UPDATE games SET creator_id = 1 WHERE creator_id = %s", (user_id,))
+        
+        # 8. Mettre à jour les parties où l'utilisateur est gagnant
+        cursor.execute("UPDATE games SET winner_id = NULL WHERE winner_id = %s", (user_id,))
+        
+        # 9. Enfin, supprimer l'utilisateur
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        
+        conn.commit()
+        
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error deleting user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete user: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
     
     return {"success": True}
+    
 
 @app.post("/api/admin/withdrawals/{withdrawal_id}/reject")
 async def reject_withdrawal(withdrawal_id: int, current_user: dict = Depends(get_current_user)):
