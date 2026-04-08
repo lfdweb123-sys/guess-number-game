@@ -236,6 +236,39 @@ def create_password_reset_tokens_table():
         if conn:
             conn.close()
 
+def create_chat_messages_table():
+    """Crée la table chat_messages pour le support client"""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                message TEXT NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_id (user_id),
+                INDEX idx_created_at (created_at),
+                INDEX idx_is_read (is_read),
+                INDEX idx_is_admin (is_admin)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        logger.info("✅ Table chat_messages créée avec succès")
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la création de chat_messages: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
 def init_database():
     """Initialize database tables with error handling"""
     conn = None
@@ -376,7 +409,7 @@ def init_database():
         """)
         logger.info("Withdrawal requests table ready")
 
-        # ── Password Reset Tokens (NOUVEAU) ───────────────────
+        # ── Password Reset Tokens ────────────────────────────
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS password_reset_tokens (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -393,6 +426,24 @@ def init_database():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         logger.info("Password reset tokens table ready")
+
+        # ── Chat Messages (NOUVEAU) ───────────────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                message TEXT NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_id (user_id),
+                INDEX idx_created_at (created_at),
+                INDEX idx_is_read (is_read),
+                INDEX idx_is_admin (is_admin)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        logger.info("Chat messages table ready")
 
         # ── Index supplémentaires ─────────────────────────────
         try:
