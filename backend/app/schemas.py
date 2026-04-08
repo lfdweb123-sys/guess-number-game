@@ -53,7 +53,8 @@ class WebSocketMessage(BaseModel):
     type: str
     data: dict
 
-
+# ✅ CORRECTION ICI - Ajout du champ provider
 class MobileMoneyWithdraw(BaseModel):
     phone_number: str
     amount: float
+    provider: str = "MTN"  # Valeur par défaut MTN, peut être "MTN", "Celtiis", "Moov"
