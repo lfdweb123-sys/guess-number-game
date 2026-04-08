@@ -1445,7 +1445,16 @@ async def cleanup_tokens():
     """Nettoie les tokens expirés (peut être appelé par un cron job)"""
     cleanup_expired_tokens()
     return {"success": True, "message": "Tokens expirés supprimés"}
-    
+
+
+@app.get("/api/debug/brevo")
+async def debug_brevo():
+    """Vérifier la configuration Brevo"""
+    return {
+        "brevo_api_key_configured": bool(os.getenv("BREVO_API_KEY")),
+        "brevo_email": os.getenv("BREVO_EMAIL"),
+        "key_preview": os.getenv("BREVO_API_KEY", "")[:20] + "..." if os.getenv("BREVO_API_KEY") else "None"
+    }
 
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
