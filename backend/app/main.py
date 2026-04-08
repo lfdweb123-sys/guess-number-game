@@ -1595,6 +1595,144 @@ async def admin_add_balance(username: str, amount: float):
             conn.close()
 
 
+
+# ============================================================
+# ADMIN ENDPOINTS
+# ============================================================
+
+@app.get("/api/admin/stats")
+async def get_admin_stats(current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("SELECT COUNT(*) as total FROM users WHERE username != 'admin'")
+    total_users = cursor.fetchone()['total']
+    
+    cursor.execute("SELECT COUNT(*) as total FROM games")
+    total_games = cursor.fetchone()['total']
+    
+    cursor.execute("SELECT SUM(amount) as total FROM transactions WHERE type = 'withdrawal' AND status = 'completed'")
+    total_withdrawn = cursor.fetchone()['total'] or 0
+    
+    cursor.execute("SELECT SUM(amount) as total FROM transactions WHERE type = 'win' AND status = 'completed'")
+    total_won = cursor.fetchone()['total'] or 0
+    
+    cursor.execute("SELECT COUNT(*) as pending FROM withdrawal_requests WHERE status = 'pending'")
+    pending_withdrawals = cursor.fetchone()['pending']
+    
+    cursor.close()
+    conn.close()
+    
+    return {
+        "total_users": total_users,
+        "total_games": total_games,
+        "total_withdrawn": float(total_withdrawn),
+        "total_won": float(total_won),
+        "pending_withdrawals": pending_withdrawals,
+        "platform_balance": float(total_won) - float(total_withdrawn)
+    }
+
+@app.get("/api/admin/users")
+async def get_admin_users(current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, username, email, balance, is_banned, created_at FROM users ORDER BY id")
+    users = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return {"users": serialize_for_json(users)}
+
+@app.post("/api/admin/users/{user_id}/toggle-ban")
+async def toggle_ban_user(user_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT is_banned FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_status = not user[0]
+    cursor.execute("UPDATE users SET is_banned = %s WHERE id = %s", (new_status, user_id))
+    conn.commit()
+    
+    cursor.close()
+    conn.close()
+    
+    return {"success": True, "is_banned": new_status}
+
+@app.put("/api/admin/users/{user_id}/balance")
+async def update_user_balance(user_id: int, request: Request, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    data = await request.json()
+    new_balance = data.get('balance')
+    
+    if new_balance is None or new_balance < 0:
+        raise HTTPException(status_code=400, detail="Invalid balance")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = %s WHERE id = %s", (new_balance, user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {"success": True}
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id = %s AND username != 'admin'", (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {"success": True}
+
+@app.post("/api/admin/withdrawals/{withdrawal_id}/reject")
+async def reject_withdrawal(withdrawal_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("SELECT user_id, amount, transaction_id FROM withdrawal_requests WHERE id = %s AND status = 'pending'", (withdrawal_id,))
+    wr = cursor.fetchone()
+    
+    if not wr:
+        raise HTTPException(status_code=404, detail="Withdrawal not found")
+    
+    # Recréditer l'utilisateur
+    cursor.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (wr['amount'], wr['user_id']))
+    
+    # Mettre à jour le statut
+    cursor.execute("UPDATE withdrawal_requests SET status = 'rejected', processed_at = NOW() WHERE id = %s", (withdrawal_id,))
+    
+    cursor.execute("UPDATE transactions SET status = 'rejected' WHERE reference = %s", (wr['transaction_id'],))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {"success": True}
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
