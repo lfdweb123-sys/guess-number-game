@@ -49,28 +49,67 @@ EMAIL_PASSWORD = "rwyezyfswwurmmji"   # ← Remplace par ton mot de passe d'appl
 
 
 # ─────────────────────────────────────────────
-# Firebase Admin Init
+# Firebase Admin Init - Version Variables d'environnement
 # ─────────────────────────────────────────────
+import os
+import json
+import firebase_admin
+from firebase_admin import credentials
+
 _firebase_app = None
 
 def init_firebase_admin():
-    """Initialiser le SDK Firebase Admin (appelé dans lifespan)."""
+    """Initialiser Firebase Admin SDK avec variables d'environnement."""
     global _firebase_app
     if _firebase_app is None:
         try:
-            import os
-            cred_path = os.path.join(os.path.dirname(__file__), "..", "firebase_credentials.json")
-            if not os.path.exists(cred_path):
-                logger.warning(f"⚠️  Firebase credentials file not found at {cred_path}. Push notifications will be disabled.")
+            # Méthode 1: Variables individuelles
+            private_key = os.getenv("FIREBASE_PRIVATE_KEY")
+            
+            if private_key:
+                # Remplacer les \n littéraux par de vrais sauts de ligne
+                private_key = private_key.replace('\\n', '\n')
+                
+                creds_dict = {
+                    "type": os.getenv("FIREBASE_TYPE", "service_account"),
+                    "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+                    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+                    "private_key": private_key,
+                    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+                    "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+                    "auth_uri": os.getenv("FIREBASE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
+                    "token_uri": os.getenv("FIREBASE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
+                    "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
+                    "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL"),
+                    "universe_domain": os.getenv("FIREBASE_UNIVERSE_DOMAIN", "googleapis.com")
+                }
+                
+                cred = credentials.Certificate(creds_dict)
+                _firebase_app = firebase_admin.initialize_app(cred)
+                logger.info("✅ Firebase Admin SDK initialisé (depuis variables env)")
                 return
-
-            cred = credentials.Certificate(cred_path)
-            _firebase_app = firebase_admin.initialize_app(cred)
-            logger.info("✅ Firebase Admin SDK initialisé")
+            
+            # Méthode 2: JSON complet (fallback)
+            firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS")
+            if firebase_creds_json:
+                creds_dict = json.loads(firebase_creds_json)
+                cred = credentials.Certificate(creds_dict)
+                _firebase_app = firebase_admin.initialize_app(cred)
+                logger.info("✅ Firebase Admin SDK initialisé (depuis JSON env)")
+                return
+            
+            # Méthode 3: Fichier local (développement uniquement)
+            cred_path = os.path.join(os.path.dirname(__file__), "..", "firebase_credentials.json")
+            if os.path.exists(cred_path):
+                cred = credentials.Certificate(cred_path)
+                _firebase_app = firebase_admin.initialize_app(cred)
+                logger.info("✅ Firebase Admin SDK initialisé (depuis fichier local)")
+                return
+                
+            logger.warning("⚠️ Aucune configuration Firebase trouvée")
+            
         except Exception as e:
-            logger.warning(f"⚠️  Firebase Admin SDK initialization failed: {e}. Push notifications will be disabled.")
-
-
+            logger.warning(f"⚠️ Firebase Admin SDK initialization failed: {e}")
 # ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
@@ -1456,6 +1495,16 @@ async def debug_brevo():
         "key_preview": os.getenv("BREVO_API_KEY", "")[:20] + "..." if os.getenv("BREVO_API_KEY") else "None"
     }
 
+
+@app.get("/api/debug/firebase")
+async def debug_firebase():
+    """Vérifier la configuration Firebase"""
+    return {
+        "firebase_configured": bool(os.getenv("FIREBASE_PRIVATE_KEY")),
+        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+    }
+    
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
