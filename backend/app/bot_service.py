@@ -56,7 +56,7 @@ def ensure_admin_user():
     """Crée le compte admin s'il n'existe pas encore."""
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         # Vérifier si l'admin existe déjà
@@ -67,38 +67,43 @@ def ensure_admin_user():
             logger.info(f"Compte admin (username={ADMIN_USERNAME}) existe déjà.")
         else:
             from .auth import get_password_hash
+            
+            # Générer le hash du mot de passe
+            password_hash = get_password_hash(ADMIN_PASSWORD)
+            
+            # Vérifier que la colonne is_banned existe
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM information_schema.columns 
+                WHERE table_schema = DATABASE()
+                AND table_name = 'users' 
+                AND column_name = 'is_banned'
+            """)
+            column_exists = cursor.fetchone()
+            
+            if not column_exists or column_exists[0] == 0:
+                cursor.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+                conn.commit()
+                logger.info("✅ Colonne is_banned ajoutée")
+            
             # Créer le compte admin
-            cursor.execute(
-                """
+            cursor.execute("""
                 INSERT INTO users (username, password_hash, balance, is_banned)
                 VALUES (%s, %s, %s, FALSE)
-                """,
-                (ADMIN_USERNAME, get_password_hash(ADMIN_PASSWORD), 0)
-            )
+            """, (ADMIN_USERNAME, password_hash, 0))
+            
             conn.commit()
             logger.info(f"✅ Compte admin créé - Username: {ADMIN_USERNAME}, Mot de passe: {ADMIN_PASSWORD}")
 
-        # S'assurer que la colonne is_banned existe (au cas où)
-        cursor.execute("""
-            SELECT COUNT(*) 
-            FROM information_schema.columns 
-            WHERE table_schema = DATABASE()
-            AND table_name = 'users' 
-            AND column_name = 'is_banned'
-        """)
-        column_exists = cursor.fetchone()
-        
-        if column_exists and column_exists[0] == 0:
-            cursor.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
-            conn.commit()
-            logger.info("✅ Colonne is_banned ajoutée")
-
     except Exception as e:
         logger.error(f"Erreur ensure_admin_user: {e}")
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 def create_bot_game(bet_amount: float) -> int | None:
