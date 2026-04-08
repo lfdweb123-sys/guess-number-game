@@ -2,6 +2,9 @@
 INSERT IGNORE INTO users (id, username, password_hash, balance) 
 VALUES (1, 'admin', 'admin_hash', 0);
 
+-- Add is_banned column to users table if it doesn't exist
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS withdrawal_requests (
  id INT AUTO_INCREMENT PRIMARY KEY,
  user_id INT NOT NULL,
