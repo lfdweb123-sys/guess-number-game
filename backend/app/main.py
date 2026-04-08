@@ -813,7 +813,7 @@ async def get_pending_withdrawals(current_user: dict = Depends(get_current_user)
     conn   = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT wr.*, u.username, u.email
+        SELECT wr.*, u.username
         FROM withdrawal_requests wr
         JOIN users u ON wr.user_id = u.id
         WHERE wr.status = 'pending'
@@ -1649,7 +1649,7 @@ async def get_admin_users(current_user: dict = Depends(get_current_user)):
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, username, email, balance, is_banned, created_at FROM users ORDER BY id")
+    cursor.execute("SELECT id, username, balance, is_banned, created_at FROM users ORDER BY id")
     users = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -1758,7 +1758,6 @@ async def get_admin_chats(current_user: dict = Depends(get_current_user)):
         SELECT 
             u.id as user_id,
             u.username,
-            u.email,
             u.is_banned,
             (
                 SELECT message 
@@ -1860,7 +1859,7 @@ async def get_user_details(user_id: int, current_user: dict = Depends(get_curren
     cursor = conn.cursor(dictionary=True)
     
     cursor.execute("""
-        SELECT id, username, email, balance, is_banned, created_at
+        SELECT id, username, balance, is_banned, created_at
         FROM users WHERE id = %s
     """, (user_id,))
     user = cursor.fetchone()
