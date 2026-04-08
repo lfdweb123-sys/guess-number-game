@@ -555,6 +555,7 @@ async def initiate_deposit(deposit: MobileMoneyDeposit, current_user: dict = Dep
 # ─────────────────────────────────────────────
 @app.post("/api/withdraw")
 async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
+    logger.info(f"📞 WITHDRAW REQUEST: user={current_user['id']}, amount={withdraw.amount}, phone={withdraw.phone_number}")
     # ── Validations ──────────────────────────────────
     if withdraw.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
