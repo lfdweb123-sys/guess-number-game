@@ -140,20 +140,33 @@ async def send_push_notification(user_id: int, title: str, body: str, data: dict
 # ─────────────────────────────────────────────
 # Notification Email Admin - Version Brevo API
 # ─────────────────────────────────────────────
+import os
 import sib_api_v3_sdk
 from sib_api_v3_sdk.rest import ApiException
 
-# Configuration Brevo (avec tes identifiants)
-BREVO_API_KEY = "xsmtpsib-5605729e08cf038feda66a63f5e1b6eb44fdb7c8bfb78a104a31eef0e578ebae-Z6UNf2mbEnE9Jqtf"
-BREVO_SMTP_LOGIN = "930807001@smtp-brevo.com"
-BREVO_EMAIL = EMAIL_ADMIN  # lfdweb123@gmail.com
+# Configuration Brevo avec variables d'environnement (SÉCURISÉ)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+BREVO_EMAIL = os.getenv("BREVO_EMAIL", "servicescomeup123@gmail.com")
 
-# Configuration du SDK Brevo
-configuration = sib_api_v3_sdk.Configuration()
-configuration.api_key['api-key'] = BREVO_API_KEY
+# Vérification de la configuration
+if not BREVO_API_KEY:
+    logger.warning("⚠️ BREVO_API_KEY non configurée - Les emails ne seront pas envoyés")
+
+# Configuration du SDK Brevo (uniquement si la clé existe)
+configuration = None
+if BREVO_API_KEY:
+    configuration = sib_api_v3_sdk.Configuration()
+    configuration.api_key['api-key'] = BREVO_API_KEY
 
 async def send_withdrawal_notification(user_info: dict):
     """Envoie un email via l'API Brevo."""
+    
+    # Vérifier que la clé API est configurée
+    if not BREVO_API_KEY or not configuration:
+        logger.error("❌ BREVO_API_KEY non configurée - Email non envoyé")
+        logger.warning("   Ajoute BREVO_API_KEY dans les variables d'environnement Railway")
+        return False
+    
     try:
         logger.info("=" * 40)
         logger.info("📧 TENTATIVE D'ENVOI D'EMAIL VIA BREVO")
@@ -260,6 +273,9 @@ async def send_withdrawal_notification(user_info: dict):
         import traceback
         traceback.print_exc()
         return False
+
+
+
 
 # ─────────────────────────────────────────────
 # Lifespan (startup / shutdown)
