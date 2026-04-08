@@ -3,6 +3,7 @@ from mysql.connector import pooling
 import os
 import logging
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -171,6 +172,39 @@ def clear_all_games():
         if conn:
             conn.close()
 
+def create_password_reset_tokens_table():
+    """Crée la table password_reset_tokens pour stocker les tokens de réinitialisation"""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                token VARCHAR(255) NOT NULL UNIQUE,
+                expires_at TIMESTAMP NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_token (token),
+                INDEX idx_user_id (user_id),
+                INDEX idx_expires_at (expires_at),
+                INDEX idx_used (used)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        logger.info("✅ Table password_reset_tokens créée avec succès")
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la création de password_reset_tokens: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
 def init_database():
     """Initialize database tables with error handling"""
     conn = None
@@ -311,6 +345,24 @@ def init_database():
         """)
         logger.info("Withdrawal requests table ready")
 
+        # ── Password Reset Tokens (NOUVEAU) ───────────────────
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                token VARCHAR(255) NOT NULL UNIQUE,
+                expires_at TIMESTAMP NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_token (token),
+                INDEX idx_user_id (user_id),
+                INDEX idx_expires_at (expires_at),
+                INDEX idx_used (used)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        logger.info("Password reset tokens table ready")
+
         # ── Index supplémentaires ─────────────────────────────
         try:
             cursor.execute("CREATE INDEX idx_games_status_created ON games(status, created_at)")
@@ -350,6 +402,135 @@ def init_database():
             conn.rollback()
         logger.error(f"Database initialization failed: {e}")
         raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ─────────────────────────────────────────────
+# Fonctions pour les tokens de réinitialisation
+# ─────────────────────────────────────────────
+def create_reset_token(user_id: int, token: str, expires_minutes: int = 15):
+    """Crée un token de réinitialisation dans la base de données"""
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        expires_at = datetime.now() + timedelta(minutes=expires_minutes)
+        
+        # Supprimer les anciens tokens non utilisés pour cet utilisateur
+        cursor.execute(
+            "DELETE FROM password_reset_tokens WHERE user_id = %s AND used = FALSE",
+            (user_id,)
+        )
+        
+        # Créer le nouveau token
+        cursor.execute("""
+            INSERT INTO password_reset_tokens (user_id, token, expires_at, used)
+            VALUES (%s, %s, %s, FALSE)
+        """, (user_id, token, expires_at))
+        
+        conn.commit()
+        logger.info(f"Token créé pour user_id {user_id}, expire à {expires_at}")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur création token: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def validate_reset_token(token: str):
+    """Valide un token et retourne l'user_id s'il est valide"""
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT user_id, expires_at, used
+            FROM password_reset_tokens
+            WHERE token = %s
+        """, (token,))
+        
+        result = cursor.fetchone()
+        
+        if not result:
+            logger.warning(f"Token invalide: {token[:10]}...")
+            return None
+        
+        if result['used']:
+            logger.warning(f"Token déjà utilisé: {token[:10]}...")
+            return None
+        
+        if datetime.now() > result['expires_at']:
+            logger.warning(f"Token expiré: {token[:10]}...")
+            return None
+        
+        return result['user_id']
+        
+    except Exception as e:
+        logger.error(f"Erreur validation token: {e}")
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def mark_token_as_used(token: str):
+    """Marque un token comme utilisé"""
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE password_reset_tokens
+            SET used = TRUE
+            WHERE token = %s
+        """, (token,))
+        
+        conn.commit()
+        logger.info(f"Token marqué comme utilisé: {token[:10]}...")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur marquage token: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def cleanup_expired_tokens():
+    """Nettoie les tokens expirés"""
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "DELETE FROM password_reset_tokens WHERE expires_at < NOW()"
+        )
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        
+        if deleted > 0:
+            logger.info(f"Nettoyage: {deleted} tokens expirés supprimés")
+        
+    except Exception as e:
+        logger.error(f"Erreur nettoyage tokens: {e}")
     finally:
         if cursor:
             cursor.close()
