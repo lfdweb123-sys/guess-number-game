@@ -555,37 +555,49 @@ async def initiate_deposit(deposit: MobileMoneyDeposit, current_user: dict = Dep
 # ─────────────────────────────────────────────
 @app.post("/api/withdraw")
 async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(get_current_user)):
-    logger.info(f"📞 WITHDRAW REQUEST: user={current_user['id']}, amount={withdraw.amount}, phone={withdraw.phone_number}")
+    # LOGS DÉTAILLÉS
+    logger.info("=" * 50)
+    logger.info(f"📞 WITHDRAW REQUEST")
+    logger.info(f"   User ID: {current_user['id']}")
+    logger.info(f"   Username: {current_user['username']}")
+    logger.info(f"   Amount: {withdraw.amount}")
+    logger.info(f"   Phone: {withdraw.phone_number}")
+    logger.info(f"   Provider: {withdraw.provider}")  # ← Maintenant disponible
+    logger.info(f"   Current balance: {current_user['balance']}")
+    logger.info("=" * 50)
+    
     # ── Validations ──────────────────────────────────
     if withdraw.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-
+    
     if withdraw.amount < 1000:
         raise HTTPException(status_code=400, detail="Minimum withdrawal is 1000 XOF")
-
+    
     if float(current_user['balance']) < withdraw.amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
-
+    
     transaction_id = f"WDR_{int(datetime.now().timestamp())}_{current_user['id']}"
     new_balance    = float(current_user['balance']) - withdraw.amount
-
+    
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor()
-
+        
         # 1. Déduire le solde
         cursor.execute(
             "UPDATE users SET balance = balance - %s WHERE id = %s",
             (withdraw.amount, current_user['id'])
         )
-
+        logger.info(f"✅ Balance updated for user {current_user['id']}")
+        
         # 2. Enregistrer dans transactions
         cursor.execute("""
             INSERT INTO transactions (user_id, amount, type, reference, status)
             VALUES (%s, %s, 'withdrawal', %s, 'pending')
         """, (current_user['id'], -withdraw.amount, transaction_id))
-
+        logger.info(f"✅ Transaction recorded: {transaction_id}")
+        
         # 3. Enregistrer dans withdrawal_requests
         cursor.execute("""
             INSERT INTO withdrawal_requests
@@ -595,21 +607,27 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
             current_user['id'],
             withdraw.phone_number,
             withdraw.amount,
-            withdraw.provider,
+            withdraw.provider,  # ← Maintenant disponible
             transaction_id
         ))
-
+        logger.info(f"✅ Withdrawal request recorded")
+        
         conn.commit()
-        logger.info(f"Withdrawal request: User {current_user['id']}, Amount {withdraw.amount}")
-
+        logger.info(f"✅ Withdrawal transaction COMMITTED: {transaction_id}")
+        
     except Exception as e:
-        if conn: conn.rollback()
-        logger.error(f"Withdrawal DB error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process withdrawal")
+        if conn:
+            conn.rollback()
+        logger.error(f"❌ Withdrawal DB error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to process withdrawal: {str(e)}")
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
-
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
     # 4. Email à l'admin (asynchrone)
     user_info = {
         'username':        current_user['username'],
@@ -623,15 +641,15 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
         'transaction_id':  transaction_id
     }
     asyncio.create_task(send_withdrawal_notification(user_info))
-
-    # 5. Push notification retrait en cours
+    
+    # 5. Push notification
     asyncio.create_task(send_push_notification(
         user_id=current_user['id'],
         title="🔄 Retrait en cours",
         body=f"Votre demande de retrait de {withdraw.amount:,.0f} XOF est en cours de traitement.",
         data={'type': 'withdrawal_pending', 'transaction_id': transaction_id}
     ))
-
+    
     return {
         "success":        True,
         "transaction_id": transaction_id,
