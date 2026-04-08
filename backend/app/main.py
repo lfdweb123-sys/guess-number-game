@@ -562,7 +562,7 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
     logger.info(f"   Username: {current_user['username']}")
     logger.info(f"   Amount: {withdraw.amount}")
     logger.info(f"   Phone: {withdraw.phone_number}")
-    logger.info(f"   Provider: {withdraw.provider}")  # ← Maintenant disponible
+    logger.info(f"   Provider: {withdraw.provider}")
     logger.info(f"   Current balance: {current_user['balance']}")
     logger.info("=" * 50)
     
@@ -577,7 +577,7 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
         raise HTTPException(status_code=400, detail="Insufficient balance")
     
     transaction_id = f"WDR_{int(datetime.now().timestamp())}_{current_user['id']}"
-    new_balance    = float(current_user['balance']) - withdraw.amount
+    new_balance = float(current_user['balance']) - withdraw.amount  # ← CORRIGÉ
     
     conn = cursor = None
     try:
@@ -607,7 +607,7 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
             current_user['id'],
             withdraw.phone_number,
             withdraw.amount,
-            withdraw.provider,  # ← Maintenant disponible
+            withdraw.provider,
             transaction_id
         ))
         logger.info(f"✅ Withdrawal request recorded")
@@ -628,7 +628,7 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
         if conn:
             conn.close()
     
-    # 4. Email à l'admin (asynchrone)
+    # 4. Email à l'admin (ATTENDU avec await)
     user_info = {
         'username':        current_user['username'],
         'email':           current_user.get('email', 'Non renseigné'),
@@ -640,9 +640,11 @@ async def withdraw(withdraw: MobileMoneyWithdraw, current_user: dict = Depends(g
         'date':            datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         'transaction_id':  transaction_id
     }
-    asyncio.create_task(send_withdrawal_notification(user_info))
     
-    # 5. Push notification
+    # ← ICI: await au lieu de asyncio.create_task
+    await send_withdrawal_notification(user_info)
+    
+    # 5. Push notification (peut rester en create_task)
     asyncio.create_task(send_push_notification(
         user_id=current_user['id'],
         title="🔄 Retrait en cours",
