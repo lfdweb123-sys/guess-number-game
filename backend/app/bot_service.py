@@ -1,7 +1,7 @@
 import asyncio
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from .database import get_db_connection
 from .websocket_manager import manager
 
@@ -11,11 +11,15 @@ PLATFORM_USER_ID = 1
 PLATFORM_USERNAME = "Joueur_Virtuel"
 
 ADMIN_USER_ID = 2
-ADMIN_USERNAME = "Admin"
+ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Guess123"
 
 BOT_BET_AMOUNTS  = [500, 1000, 2000, 5000]
 BOT_GAME_INTERVAL = 30
+
+# ✅ Délai avant suppression automatique des jeux annulés (en heures)
+CLEANUP_INTERVAL_HOURS = 1
+CLEANUP_CHECK_INTERVAL = 60  # Vérification toutes les heures
 
 
 def ensure_platform_user():
@@ -227,6 +231,52 @@ def _get_real_participants(game_id: int) -> list[int]:
     finally:
         if cursor: cursor.close()
         if conn:   conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# ✅ SUPPRESSION AUTOMATIQUE DES JEUX ANNULÉS
+# ─────────────────────────────────────────────────────────────
+def cleanup_cancelled_games():
+    """Supprime les parties annulées datant de plus de CLEANUP_INTERVAL_HOURS"""
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Calculer la date limite
+        cutoff_date = datetime.now() - timedelta(hours=CLEANUP_INTERVAL_HOURS)
+        
+        # Supprimer les participants des parties annulées
+        cursor.execute("""
+            DELETE gp FROM game_participants gp
+            JOIN games g ON gp.game_id = g.id
+            WHERE g.status = 'cancelled' AND g.created_at < %s
+        """, (cutoff_date,))
+        
+        deleted_participants = cursor.rowcount
+        
+        # Supprimer les parties annulées
+        cursor.execute("""
+            DELETE FROM games 
+            WHERE status = 'cancelled' AND created_at < %s
+        """, (cutoff_date,))
+        
+        deleted_games = cursor.rowcount
+        
+        conn.commit()
+        
+        if deleted_games > 0:
+            logger.info(f"🧹 Nettoyage automatique: {deleted_games} parties annulées supprimées (et {deleted_participants} participants)")
+        
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage des parties annulées: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -464,12 +514,30 @@ async def _notify_game_result(game_id: int, result: dict):
 
 
 # ─────────────────────────────────────────────────────────────
+# ✅ Tâche de nettoyage automatique en arrière-plan
+# ─────────────────────────────────────────────────────────────
+async def cleanup_scheduler():
+    """Tâche asynchrone qui nettoie les parties annulées périodiquement"""
+    logger.info(f"[CLEANUP] Nettoyage automatique activé - suppression après {CLEANUP_INTERVAL_HOURS}h")
+    
+    while True:
+        try:
+            await asyncio.sleep(CLEANUP_CHECK_INTERVAL)
+            cleanup_cancelled_games()
+        except Exception as e:
+            logger.error(f"[CLEANUP] Erreur: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Scheduler principal
 # ─────────────────────────────────────────────────────────────
 async def bot_scheduler():
     ensure_platform_user()
-    ensure_admin_user()  # ✅ AJOUTÉ : Créer le compte admin automatiquement
+    ensure_admin_user()
     logger.info("[BOT] Scheduler démarré — parties automatiques toutes les 30s")
+    
+    # ✅ Démarrer la tâche de nettoyage automatique
+    asyncio.create_task(cleanup_scheduler())
 
     while True:
         try:
