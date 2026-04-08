@@ -1537,6 +1537,64 @@ async def test_push(current_user: dict = Depends(get_current_user)):
         "user_id": current_user['id']
     }
     
+
+# ─────────────────────────────────────────────
+# Admin Endpoints
+# ─────────────────────────────────────────────
+@app.post("/api/admin/add-balance")
+async def admin_add_balance(username: str, amount: float):
+    """Admin endpoint to add balance to a user (for testing/admin purposes)."""
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Get user
+        cursor.execute("SELECT id, balance FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Add balance
+        cursor.execute(
+            "UPDATE users SET balance = balance + %s WHERE id = %s",
+            (amount, user['id'])
+        )
+        
+        # Record transaction
+        cursor.execute("""
+            INSERT INTO transactions (user_id, amount, type, reference, status)
+            VALUES (%s, %s, 'admin_credit', %s, 'completed')
+        """, (user['id'], amount, f"ADMIN_CREDIT_{int(datetime.now().timestamp())}"))
+        
+        conn.commit()
+        new_balance = float(user['balance']) + amount
+        
+        logger.info(f"Admin: Added {amount} XOF to {username}. New balance: {new_balance}")
+        return {
+            "success": True,
+            "username": username,
+            "amount_added": amount,
+            "new_balance": new_balance
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Admin balance error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add balance")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
