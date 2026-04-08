@@ -146,7 +146,7 @@ from sib_api_v3_sdk.rest import ApiException
 
 # Configuration Brevo avec variables d'environnement (SÉCURISÉ)
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-BREVO_EMAIL = os.getenv("BREVO_EMAIL", "servicescomeup123@gmail.com")
+BREVO_EMAIL = os.getenv("BREVO_EMAIL", "lfdweb123@gmail.com")
 
 # Vérification de la configuration
 if not BREVO_API_KEY:
