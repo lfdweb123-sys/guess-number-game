@@ -110,6 +110,37 @@ def test_connection():
         logger.error(f"Database connection test failed: {e}")
         return False
 
+def ensure_is_banned_column():
+    """Ajoute la colonne is_banned si elle n'existe pas"""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.columns 
+            WHERE table_schema = DATABASE()
+            AND table_name = 'users' 
+            AND column_name = 'is_banned'
+        """)
+        exists = cursor.fetchone()[0]
+
+        if not exists:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+            conn.commit()
+            logger.info("✅ Colonne is_banned ajoutée à la table users")
+        else:
+            logger.info("✅ Colonne is_banned existe déjà")
+    except Exception as e:
+        logger.warning(f"Erreur lors de l'ajout de is_banned: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
 def ensure_fcm_token_column():
     """Ajoute la colonne fcm_token si elle n'existe pas"""
     conn = None
@@ -376,6 +407,9 @@ def init_database():
         except Exception as e:
             logger.info(f"Index idx_participants_game_user already exists or error: {e}")
         
+        # ── Ajouter la colonne is_banned ──────────────────────
+        ensure_is_banned_column()
+
         # ── Ajouter la colonne fcm_token ──────────────────────
         ensure_fcm_token_column()
         
