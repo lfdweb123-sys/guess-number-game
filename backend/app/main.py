@@ -802,35 +802,35 @@ async def get_leaderboard(limit: int = 10):
 
 
 # ─────────────────────────────────────────────
-# Retraits en attente (admin)
+# Retraits (admin) - VERSION CORRIGÉE
 # ─────────────────────────────────────────────
 @app.get("/api/admin/withdrawals")
-async def get_pending_withdrawals(current_user: dict = Depends(get_current_user)):
-    """Liste des retraits en attente — accessible uniquement à l'admin."""
-    if current_user.get('username') != 'admin':
+async def get_admin_withdrawals(current_user: dict = Depends(get_current_user)):
+    """Liste de TOUS les retraits — accessible uniquement à l'admin."""
+    if current_user.get('username').lower() != 'admin':
         raise HTTPException(status_code=403, detail="Admin only")
 
-    conn   = get_db_connection()
+    conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT wr.*, u.username
         FROM withdrawal_requests wr
         JOIN users u ON wr.user_id = u.id
-        WHERE wr.status = 'pending'
         ORDER BY wr.created_at DESC
-    """)
+    """)  # ← PLUS DE FILTRE, on prend TOUS les retraits
     withdrawals = cursor.fetchall()
     cursor.close()
     conn.close()
     return {"withdrawals": serialize_for_json(withdrawals)}
 
+
 @app.post("/api/admin/withdrawals/{withdrawal_id}/confirm")
 async def confirm_withdrawal(withdrawal_id: int, current_user: dict = Depends(get_current_user)):
     """Marquer un retrait comme traité."""
-    if current_user.get('username') != 'admin':
+    if current_user.get('username').lower() != 'admin':
         raise HTTPException(status_code=403, detail="Admin only")
 
-    conn   = get_db_connection()
+    conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     # Récupérer les infos du retrait avant commit pour le push
@@ -840,13 +840,17 @@ async def confirm_withdrawal(withdrawal_id: int, current_user: dict = Depends(ge
     )
     wr = cursor.fetchone()
 
+    if not wr:
+        raise HTTPException(status_code=404, detail="Withdrawal not found")
+
+    # Mettre à jour le statut
     cursor.execute("""
         UPDATE withdrawal_requests
         SET status = 'completed', processed_at = NOW()
         WHERE id = %s AND status = 'pending'
     """, (withdrawal_id,))
 
-    # Mettre à jour aussi la transaction
+    # Mettre à jour la transaction associée
     cursor.execute("""
         UPDATE transactions t
         JOIN withdrawal_requests wr ON t.reference = wr.transaction_id
@@ -868,6 +872,7 @@ async def confirm_withdrawal(withdrawal_id: int, current_user: dict = Depends(ge
         ))
 
     return {"success": True, "message": "Retrait confirmé"}
+
 
 
 # ─────────────────────────────────────────────
