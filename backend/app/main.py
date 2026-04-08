@@ -1165,11 +1165,104 @@ async def change_password(request: Request):
         if conn:
             conn.close()
 
-# ============================================================
-# SQL - A executer UNE SEULE FOIS sur Railway
-# ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
-# CREATE INDEX idx_fcm_token ON users(fcm_token);
-# ============================================================
+
+
+
+# Ajoutez ces endpoints dans votre main.py
+
+@app.post("/api/reset-password")
+async def reset_password(request: Request):
+    data = await request.json()
+    username = data.get('username', '').strip()
+    new_password = data.get('new_password', '').strip()
+
+    if not username or not new_password:
+        raise HTTPException(status_code=400, detail="Champs manquants")
+
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="Nouveau mot de passe trop court")
+
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        new_hash = get_password_hash(new_password)
+        cursor.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (new_hash, user['id'])
+        )
+        conn.commit()
+        logger.info(f"Mot de passe reinitialise par email pour {username}")
+
+        return {"success": True, "message": "Mot de passe reinitialise avec succes"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.post("/api/change-username")
+async def change_username(request: Request, current_user: dict = Depends(get_current_user)):
+    data = await request.json()
+    new_username = data.get('new_username', '').strip()
+    password = data.get('password', '').strip()
+
+    if not new_username or not password:
+        raise HTTPException(status_code=400, detail="Champs manquants")
+
+    if len(new_username) < 3:
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur trop court (minimum 3 caracteres)")
+
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Verifier mot de passe
+        cursor.execute("SELECT * FROM users WHERE id = %s", (current_user['id'],))
+        user = cursor.fetchone()
+
+        if not user or not verify_password(password, user['password_hash']):
+            raise HTTPException(status_code=401, detail="Mot de passe incorrect")
+
+        # Verifier si nouveau nom existe
+        cursor.execute("SELECT id FROM users WHERE username = %s AND id != %s",
+                       (new_username, current_user['id']))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Nom d'utilisateur deja pris")
+
+        cursor.execute(
+            "UPDATE users SET username = %s WHERE id = %s",
+            (new_username, current_user['id'])
+        )
+        conn.commit()
+        logger.info(f"Username changed: {current_user['username']} -> {new_username}")
+
+        return {"success": True, "message": "Nom d'utilisateur modifie avec succes"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Change username error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
