@@ -1605,26 +1605,29 @@ async def admin_add_balance(username: str, amount: float):
 
 @app.get("/api/admin/stats")
 async def get_admin_stats(current_user: dict = Depends(get_current_user)):
-    if current_user.get('username') != 'admin':
+    if current_user.get('username').lower() != 'admin':
         raise HTTPException(status_code=403, detail="Admin only")
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
-    cursor.execute("SELECT COUNT(*) as total FROM users WHERE username != 'admin'")
+    cursor.execute("SELECT COUNT(*) as total FROM users WHERE LOWER(username) != 'admin'")
     total_users = cursor.fetchone()['total']
     
     cursor.execute("SELECT COUNT(*) as total FROM games")
     total_games = cursor.fetchone()['total']
     
-    cursor.execute("SELECT SUM(amount) as total FROM transactions WHERE type = 'withdrawal' AND status = 'completed'")
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'withdrawal' AND status = 'completed'")
     total_withdrawn = cursor.fetchone()['total'] or 0
     
-    cursor.execute("SELECT SUM(amount) as total FROM transactions WHERE type = 'win' AND status = 'completed'")
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'win' AND status = 'completed'")
     total_won = cursor.fetchone()['total'] or 0
     
     cursor.execute("SELECT COUNT(*) as pending FROM withdrawal_requests WHERE status = 'pending'")
     pending_withdrawals = cursor.fetchone()['pending']
+    
+    cursor.execute("SELECT COUNT(*) as total FROM transactions")
+    total_transactions = cursor.fetchone()['total']  # ← AJOUTÉ pour la 7ème vue
     
     cursor.close()
     conn.close()
@@ -1635,7 +1638,8 @@ async def get_admin_stats(current_user: dict = Depends(get_current_user)):
         "total_withdrawn": float(total_withdrawn),
         "total_won": float(total_won),
         "pending_withdrawals": pending_withdrawals,
-        "platform_balance": float(total_won) - float(total_withdrawn)
+        "platform_balance": float(total_won) - float(total_withdrawn),
+        "total_transactions": total_transactions  # ← AJOUTÉ
     }
 
 @app.get("/api/admin/users")
@@ -1868,6 +1872,60 @@ async def get_user_details(user_id: int, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=404, detail="User not found")
     
     return serialize_for_json(user)
+
+
+@app.get("/api/admin/games")
+async def get_admin_games(current_user: dict = Depends(get_current_user)):
+    if current_user.get('username').lower() != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT g.*, 
+               u.username as creator_name,
+               w.username as winner_name,
+               COUNT(gp.id) as participants_count
+        FROM games g
+        LEFT JOIN users u ON g.creator_id = u.id
+        LEFT JOIN users w ON g.winner_id = w.id
+        LEFT JOIN game_participants gp ON g.id = gp.game_id
+        GROUP BY g.id
+        ORDER BY g.created_at DESC
+        LIMIT 100
+    """)
+    games = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return {"games": serialize_for_json(games)}
+
+
+
+@app.get("/api/admin/transactions")
+async def get_admin_transactions(current_user: dict = Depends(get_current_user)):
+    if current_user.get('username').lower() != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT t.*, u.username
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        ORDER BY t.created_at DESC
+        LIMIT 200
+    """)
+    transactions = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return {"transactions": serialize_for_json(transactions)}
+
+
+
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
