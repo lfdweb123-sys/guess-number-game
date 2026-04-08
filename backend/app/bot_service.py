@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 PLATFORM_USER_ID = 1
 PLATFORM_USERNAME = "Joueur_Virtuel"
 
+ADMIN_USER_ID = 2
+ADMIN_USERNAME = "Admin"
+ADMIN_PASSWORD = "Guess123"
+
 BOT_BET_AMOUNTS  = [500, 1000, 2000, 5000]
 BOT_GAME_INTERVAL = 30
 
@@ -42,6 +46,55 @@ def ensure_platform_user():
         logger.info(f"Compte plateforme (id={PLATFORM_USER_ID}) prêt.")
     except Exception as e:
         logger.error(f"Erreur ensure_platform_user: {e}")
+        if conn: conn.rollback()
+    finally:
+        if cursor: cursor.close()
+        if conn:   conn.close()
+
+
+def ensure_admin_user():
+    """Crée le compte admin s'il n'existe pas encore."""
+    conn = cursor = None
+    try:
+        conn   = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Vérifier si l'admin existe déjà
+        cursor.execute("SELECT id FROM users WHERE username = %s", (ADMIN_USERNAME,))
+        admin_exists = cursor.fetchone()
+
+        if admin_exists:
+            logger.info(f"Compte admin (username={ADMIN_USERNAME}) existe déjà.")
+        else:
+            from .auth import get_password_hash
+            # Créer le compte admin
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, balance, is_banned)
+                VALUES (%s, %s, %s, FALSE)
+                """,
+                (ADMIN_USERNAME, get_password_hash(ADMIN_PASSWORD), 0)
+            )
+            conn.commit()
+            logger.info(f"✅ Compte admin créé - Username: {ADMIN_USERNAME}, Mot de passe: {ADMIN_PASSWORD}")
+
+        # S'assurer que la colonne is_banned existe (au cas où)
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.columns 
+            WHERE table_schema = DATABASE()
+            AND table_name = 'users' 
+            AND column_name = 'is_banned'
+        """)
+        column_exists = cursor.fetchone()
+        
+        if column_exists and column_exists[0] == 0:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+            conn.commit()
+            logger.info("✅ Colonne is_banned ajoutée")
+
+    except Exception as e:
+        logger.error(f"Erreur ensure_admin_user: {e}")
         if conn: conn.rollback()
     finally:
         if cursor: cursor.close()
@@ -410,6 +463,7 @@ async def _notify_game_result(game_id: int, result: dict):
 # ─────────────────────────────────────────────────────────────
 async def bot_scheduler():
     ensure_platform_user()
+    ensure_admin_user()  # ✅ AJOUTÉ : Créer le compte admin automatiquement
     logger.info("[BOT] Scheduler démarré — parties automatiques toutes les 30s")
 
     while True:
