@@ -1929,7 +1929,25 @@ async def get_admin_transactions(current_user: dict = Depends(get_current_user))
     return {"transactions": serialize_for_json(transactions)}
 
 
-
+@app.delete("/api/admin/games/{game_id}")
+async def delete_game(game_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username').lower() != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Supprimer d'abord les participants
+    cursor.execute("DELETE FROM game_participants WHERE game_id = %s", (game_id,))
+    # Puis supprimer la partie
+    cursor.execute("DELETE FROM games WHERE id = %s", (game_id,))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {"success": True}
+    
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
