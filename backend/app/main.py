@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 # Configuration Email Admin
 # ─────────────────────────────────────────────
-EMAIL_ADMIN    = "servicescomeup123@gmail.com"
+EMAIL_ADMIN    = "lfdweb123@gmail.com"
 EMAIL_PASSWORD = "rwyezyfswwurmmji"   # ← Remplace par ton mot de passe d'application Gmail
 
 
@@ -138,46 +138,55 @@ async def send_push_notification(user_id: int, title: str, body: str, data: dict
 
 
 # ─────────────────────────────────────────────
-# Notification Email Admin
+# Notification Email Admin - Version Brevo API
 # ─────────────────────────────────────────────
-async def send_withdrawal_notification(user_info: dict):
-    """Envoie un email HTML à l'admin pour chaque demande de retrait."""
-    try:
-        subject = f"🔄 Demande de retrait - {user_info['username']}"
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 
-        body = f"""
+# Configuration Brevo (avec tes identifiants)
+BREVO_API_KEY = "xsmtpsib-5605729e08cf038feda66a63f5e1b6eb44fdb7c8bfb78a104a31eef0e578ebae-Z6UNf2mbEnE9Jqtf"
+BREVO_SMTP_LOGIN = "930807001@smtp-brevo.com"
+BREVO_EMAIL = EMAIL_ADMIN  # lfdweb123@gmail.com
+
+# Configuration du SDK Brevo
+configuration = sib_api_v3_sdk.Configuration()
+configuration.api_key['api-key'] = BREVO_API_KEY
+
+async def send_withdrawal_notification(user_info: dict):
+    """Envoie un email via l'API Brevo."""
+    try:
+        logger.info("=" * 40)
+        logger.info("📧 TENTATIVE D'ENVOI D'EMAIL VIA BREVO")
+        logger.info(f"   Destinataire: {BREVO_EMAIL}")
+        logger.info(f"   Username: {user_info['username']}")
+        logger.info(f"   Montant: {user_info['amount']} XOF")
+        
+        # Construction du contenu HTML
+        html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-
             <div style="background-color: #1a1a2e; padding: 20px; border-radius: 10px 10px 0 0;">
                 <h2 style="color: #FFD700; margin: 0;">🎮 Guess Number Game</h2>
                 <p style="color: #aaa; margin: 5px 0 0;">Nouvelle demande de retrait</p>
             </div>
-
             <div style="background-color: #f9f9f9; padding: 20px; border-radius: 0 0 10px 10px; border: 1px solid #ddd;">
-
                 <h3 style="color: #333; border-bottom: 2px solid #FFD700; padding-bottom: 5px;">
                     👤 Informations utilisateur
                 </h3>
                 <table style="width: 100%; border-collapse: collapse;">
                     <tr>
-                        <td style="padding: 8px; color: #555; width: 40%;"><strong>Nom d'utilisateur :</strong></td>
+                        <td style="padding: 8px; color: #555; width: 40%;"><strong>Nom :</strong></td>
                         <td style="padding: 8px; color: #222;">{user_info['username']}</td>
                     </tr>
                     <tr style="background-color: #f0f0f0;">
-                        <td style="padding: 8px; color: #555;"><strong>Email :</strong></td>
-                        <td style="padding: 8px; color: #222;">{user_info.get('email', 'Non renseigné')}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 8px; color: #555;"><strong>ID utilisateur :</strong></td>
+                        <td style="padding: 8px; color: #555;"><strong>ID :</strong></td>
                         <td style="padding: 8px; color: #222;">{user_info['user_id']}</td>
                     </tr>
-                    <tr style="background-color: #f0f0f0;">
-                        <td style="padding: 8px; color: #555;"><strong>Solde après retrait :</strong></td>
+                    <tr>
+                        <td style="padding: 8px; color: #555;"><strong>Solde après :</strong></td>
                         <td style="padding: 8px; color: #c0392b;"><strong>{user_info['current_balance']:,.0f} XOF</strong></td>
                     </tr>
                 </table>
-
                 <h3 style="color: #333; border-bottom: 2px solid #FFD700; padding-bottom: 5px; margin-top: 20px;">
                     💰 Détails du retrait
                 </h3>
@@ -203,7 +212,6 @@ async def send_withdrawal_notification(user_info: dict):
                         <td style="padding: 8px; color: #2980b9; font-family: monospace;">{user_info['transaction_id']}</td>
                     </tr>
                 </table>
-
                 <div style="margin-top: 20px; background-color: #fff3cd; border: 1px solid #ffc107;
                             border-radius: 8px; padding: 15px;">
                     <p style="margin: 0; color: #856404;">
@@ -211,43 +219,47 @@ async def send_withdrawal_notification(user_info: dict):
                         via votre interface Mobile Money et confirmer dans le tableau de bord admin.
                     </p>
                 </div>
-
-                <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+                <hr style="margin-top: 30px;">
                 <p style="color: #999; font-size: 11px; text-align: center;">
-                    Message automatique envoyé depuis Guess Number Game — Ne pas répondre à cet email.
+                    Message automatique envoyé depuis Guess Number Game
                 </p>
             </div>
-
         </body>
         </html>
         """
-
-        msg = MIMEMultipart("alternative")
-        msg['From']    = EMAIL_ADMIN
-        msg['To']      = EMAIL_ADMIN
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html'))
-
-        # Envoi via Gmail SMTP (exécuté dans un thread pour ne pas bloquer)
+        
+        # Création de l'instance API
+        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+        
+        # Création de l'email
+        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
+            to=[{"email": BREVO_EMAIL, "name": "Admin Guess Game"}],
+            sender={"email": BREVO_EMAIL, "name": "Guess Number Game"},
+            subject=f"🔄 Demande de retrait - {user_info['username']}",
+            html_content=html_content,
+            reply_to={"email": BREVO_EMAIL, "name": "Support Guess Game"}
+        )
+        
+        # Envoi en asynchrone (pour ne pas bloquer)
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _smtp_send, msg)
-
-        logger.info(f"✅ Email de retrait envoyé pour {user_info['username']}")
+        response = await loop.run_in_executor(
+            None, 
+            lambda: api_instance.send_transac_email(send_smtp_email)
+        )
+        
+        logger.info(f"✅ Email envoyé avec succès via Brevo! Message ID: {response.message_id}")
         return True
-
+        
+    except ApiException as e:
+        logger.error(f"❌ Brevo API Exception: {e}")
+        logger.error(f"   Status: {e.status}")
+        logger.error(f"   Body: {e.body}")
+        return False
     except Exception as e:
         logger.error(f"❌ Erreur envoi email: {e}")
+        import traceback
+        traceback.print_exc()
         return False
-
-
-def _smtp_send(msg):
-    """Fonction synchrone pour l'envoi SMTP (appelée dans un executor)."""
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login(EMAIL_ADMIN, EMAIL_PASSWORD)
-    server.send_message(msg)
-    server.quit()
-
 
 # ─────────────────────────────────────────────
 # Lifespan (startup / shutdown)
