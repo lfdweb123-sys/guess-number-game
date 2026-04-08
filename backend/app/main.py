@@ -1736,6 +1736,138 @@ async def reject_withdrawal(withdrawal_id: int, current_user: dict = Depends(get
     conn.close()
     
     return {"success": True}
+
+
+# ============================================================
+# ADMIN CHAT ENDPOINTS
+# ============================================================
+
+@app.get("/api/admin/chats")
+async def get_admin_chats(current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT 
+            u.id as user_id,
+            u.username,
+            u.email,
+            u.is_banned,
+            (
+                SELECT message 
+                FROM chat_messages 
+                WHERE user_id = u.id 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            ) as last_message,
+            (
+                SELECT created_at 
+                FROM chat_messages 
+                WHERE user_id = u.id 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            ) as last_message_date,
+            (
+                SELECT COUNT(*) 
+                FROM chat_messages 
+                WHERE user_id = u.id AND is_read = FALSE AND is_admin = FALSE
+            ) as unread_count
+        FROM users u
+        WHERE u.username != 'admin'
+        ORDER BY last_message_date DESC
+    """)
+    chats = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    
+    return {"chats": serialize_for_json(chats)}
+
+@app.get("/api/admin/chats/{user_id}/messages")
+async def get_chat_messages(user_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    # Marquer les messages comme lus
+    cursor.execute("""
+        UPDATE chat_messages 
+        SET is_read = TRUE 
+        WHERE user_id = %s AND is_admin = FALSE
+    """, (user_id,))
+    
+    cursor.execute("""
+        SELECT * FROM chat_messages 
+        WHERE user_id = %s 
+        ORDER BY created_at ASC
+        LIMIT 200
+    """, (user_id,))
+    messages = cursor.fetchall()
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return {"messages": serialize_for_json(messages)}
+
+@app.post("/api/admin/chats/{user_id}/send")
+async def send_admin_message(user_id: int, request: Request, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    data = await request.json()
+    message = data.get('message')
+    
+    if not message:
+        raise HTTPException(status_code=400, detail="Message required")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO chat_messages (user_id, message, is_admin, is_read)
+        VALUES (%s, %s, TRUE, TRUE)
+    """, (user_id, message))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    # Envoyer une notification push à l'utilisateur
+    asyncio.create_task(send_push_notification(
+        user_id=user_id,
+        title="📩 Nouveau message du support",
+        body=message[:100],
+        data={'type': 'admin_message'}
+    ))
+    
+    return {"success": True}
+
+@app.get("/api/admin/users/{user_id}")
+async def get_user_details(user_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user.get('username') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin only")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    cursor.execute("""
+        SELECT id, username, email, balance, is_banned, created_at
+        FROM users WHERE id = %s
+    """, (user_id,))
+    user = cursor.fetchone()
+    
+    cursor.close()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return serialize_for_json(user)
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
 # ALTER TABLE users ADD COLUMN fcm_token VARCHAR(255) NULL;
