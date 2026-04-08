@@ -21,6 +21,10 @@ import mysql.connector
 import secrets
 import httpx
 
+import secrets
+from datetime import datetime, timedelta
+from .database import create_reset_token, validate_reset_token, mark_token_as_used, cleanup_expired_tokens
+
 # ============================================================
 # Firebase Admin SDK
 # pip install firebase-admin
@@ -1263,6 +1267,114 @@ async def change_username(request: Request, current_user: dict = Depends(get_cur
             cursor.close()
         if conn:
             conn.close()
+
+
+# ============================================================
+# GENERER UN TOKEN DE REINITIALISATION
+# ============================================================
+@app.post("/api/generate-reset-token")
+async def generate_reset_token(request: Request):
+    data = await request.json()
+    username = data.get('username', '').strip()
+
+    if not username:
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur requis")
+
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouve")
+
+        # Generer un token unique
+        token = secrets.token_urlsafe(32)
+        
+        # Sauvegarder en base
+        success = create_reset_token(user['id'], token, expires_minutes=15)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Erreur lors de la creation du token")
+
+        logger.info(f"Token genere pour {username}: {token[:10]}...")
+
+        return {"success": True, "token": token}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Generate token error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================================
+# REINITIALISER LE MOT DE PASSE AVEC TOKEN
+# ============================================================
+@app.post("/api/reset-password-with-token")
+async def reset_password_with_token(request: Request):
+    data = await request.json()
+    token = data.get('token', '').strip()
+    new_password = data.get('new_password', '').strip()
+
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token et mot de passe requis")
+
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court (minimum 4 caracteres)")
+
+    # Valider le token
+    user_id = validate_reset_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token invalide ou expire")
+
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        new_hash = get_password_hash(new_password)
+        cursor.execute(
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (new_hash, user_id)
+        )
+        
+        # Marquer le token comme utilise
+        mark_token_as_used(token)
+        
+        conn.commit()
+
+        logger.info(f"Mot de passe reinitialise avec token pour user_id {user_id}")
+
+        return {"success": True, "message": "Mot de passe reinitialise avec succes"}
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Reset password error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================================
+# NETTOYER LES TOKENS EXPIres (appeler periodiquement)
+# ============================================================
+@app.post("/api/cleanup-tokens")
+async def cleanup_tokens():
+    """Nettoie les tokens expirés (peut être appelé par un cron job)"""
+    cleanup_expired_tokens()
+    return {"success": True, "message": "Tokens expirés supprimés"}
+    
 
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
