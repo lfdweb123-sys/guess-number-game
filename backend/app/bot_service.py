@@ -14,19 +14,22 @@ ADMIN_USER_ID = 2
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Guess123"
 
-BOT_BET_AMOUNTS  = [500, 1000, 2000, 5000]
-BOT_GAME_INTERVAL = 30
+BOT_BET_AMOUNTS = [500, 1000, 2000, 5000]
 
-# ✅ Délai avant suppression automatique des jeux annulés (en heures)
-CLEANUP_INTERVAL_HOURS = 1
-CLEANUP_CHECK_INTERVAL = 60  # Vérification toutes les heures
+# ✅ Variables pour limiter à un seul jeu à la fois
+_active_bot_game_id = None
+_game_lock = asyncio.Lock()
+
+# ✅ Délai avant suppression automatique des jeux annulés (2 minutes)
+CLEANUP_INTERVAL_MINUTES = 2
+CLEANUP_CHECK_INTERVAL = 60  # Vérification toutes les minutes
 
 
 def ensure_platform_user():
     """Crée le compte plateforme s'il n'existe pas encore."""
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute("SELECT id FROM users WHERE id = %s", (PLATFORM_USER_ID,))
@@ -50,10 +53,13 @@ def ensure_platform_user():
         logger.info(f"Compte plateforme (id={PLATFORM_USER_ID}) prêt.")
     except Exception as e:
         logger.error(f"Erreur ensure_platform_user: {e}")
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 def ensure_admin_user():
@@ -63,7 +69,6 @@ def ensure_admin_user():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # Vérifier si l'admin existe déjà
         cursor.execute("SELECT id FROM users WHERE username = %s", (ADMIN_USERNAME,))
         admin_exists = cursor.fetchone()
 
@@ -71,11 +76,9 @@ def ensure_admin_user():
             logger.info(f"Compte admin (username={ADMIN_USERNAME}) existe déjà.")
         else:
             from .auth import get_password_hash
-            
-            # Générer le hash du mot de passe
+
             password_hash = get_password_hash(ADMIN_PASSWORD)
-            
-            # Vérifier que la colonne is_banned existe
+
             cursor.execute("""
                 SELECT COUNT(*) 
                 FROM information_schema.columns 
@@ -84,18 +87,17 @@ def ensure_admin_user():
                 AND column_name = 'is_banned'
             """)
             column_exists = cursor.fetchone()
-            
+
             if not column_exists or column_exists[0] == 0:
                 cursor.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
                 conn.commit()
                 logger.info("✅ Colonne is_banned ajoutée")
-            
-            # Créer le compte admin
+
             cursor.execute("""
                 INSERT INTO users (username, password_hash, balance, is_banned)
                 VALUES (%s, %s, %s, FALSE)
             """, (ADMIN_USERNAME, password_hash, 0))
-            
+
             conn.commit()
             logger.info(f"✅ Compte admin créé - Username: {ADMIN_USERNAME}, Mot de passe: {ADMIN_PASSWORD}")
 
@@ -110,10 +112,38 @@ def ensure_admin_user():
             conn.close()
 
 
-def create_bot_game(bet_amount: float) -> int | None:
+def clear_all_games():
+    """Vide tous les jeux existants (pour reset)"""
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM game_participants")
+        cursor.execute("DELETE FROM games")
+        cursor.execute("ALTER TABLE games AUTO_INCREMENT = 1")
+        cursor.execute("ALTER TABLE game_participants AUTO_INCREMENT = 1")
+
+        conn.commit()
+        logger.info("✅ Tous les jeux ont été vidés")
+        return True
+    except Exception as e:
+        logger.error(f"Erreur lors du vidage des jeux: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def create_bot_game(bet_amount: float) -> int | None:
+    global _active_bot_game_id
+    conn = cursor = None
+    try:
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(
@@ -128,6 +158,7 @@ def create_bot_game(bet_amount: float) -> int | None:
             (PLATFORM_USER_ID, bet_amount, bet_amount)
         )
         game_id = cursor.lastrowid
+        _active_bot_game_id = game_id
 
         cursor.execute(
             """
@@ -143,17 +174,20 @@ def create_bot_game(bet_amount: float) -> int | None:
 
     except Exception as e:
         logger.error(f"[BOT] Erreur create_bot_game: {e}")
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
         return None
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 def bot_join_game(game_id: int, bet_amount: float) -> bool:
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute(
@@ -204,20 +238,20 @@ def bot_join_game(game_id: int, bet_amount: float) -> bool:
 
     except Exception as e:
         logger.error(f"[BOT] Erreur bot_join_game: {e}")
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
         return False
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
-# ─────────────────────────────────────────────────────────────
-# Récupère les user_ids réels d'une partie (sans le bot)
-# ─────────────────────────────────────────────────────────────
 def _get_real_participants(game_id: int) -> list[int]:
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             "SELECT user_id FROM game_participants WHERE game_id = %s",
@@ -229,45 +263,41 @@ def _get_real_participants(game_id: int) -> list[int]:
         logger.error(f"[BOT] Erreur _get_real_participants: {e}")
         return []
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
-# ─────────────────────────────────────────────────────────────
-# ✅ SUPPRESSION AUTOMATIQUE DES JEUX ANNULÉS
-# ─────────────────────────────────────────────────────────────
 def cleanup_cancelled_games():
-    """Supprime les parties annulées datant de plus de CLEANUP_INTERVAL_HOURS"""
+    """Supprime les parties annulées datant de plus de CLEANUP_INTERVAL_MINUTES minutes"""
     conn = cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Calculer la date limite
-        cutoff_date = datetime.now() - timedelta(hours=CLEANUP_INTERVAL_HOURS)
-        
-        # Supprimer les participants des parties annulées
+
+        cutoff_date = datetime.now() - timedelta(minutes=CLEANUP_INTERVAL_MINUTES)
+
         cursor.execute("""
             DELETE gp FROM game_participants gp
             JOIN games g ON gp.game_id = g.id
             WHERE g.status = 'cancelled' AND g.created_at < %s
         """, (cutoff_date,))
-        
+
         deleted_participants = cursor.rowcount
-        
-        # Supprimer les parties annulées
+
         cursor.execute("""
             DELETE FROM games 
             WHERE status = 'cancelled' AND created_at < %s
         """, (cutoff_date,))
-        
+
         deleted_games = cursor.rowcount
-        
+
         conn.commit()
-        
+
         if deleted_games > 0:
             logger.info(f"🧹 Nettoyage automatique: {deleted_games} parties annulées supprimées (et {deleted_participants} participants)")
-        
+
     except Exception as e:
         logger.error(f"Erreur lors du nettoyage des parties annulées: {e}")
         if conn:
@@ -279,18 +309,16 @@ def cleanup_cancelled_games():
             conn.close()
 
 
-# ─────────────────────────────────────────────────────────────
-# Cycle complet d'une partie bot
-# ─────────────────────────────────────────────────────────────
 async def run_bot_game_cycle(game_id: int, bet_amount: float):
+    global _active_bot_game_id
     from .game_logic import determine_game_winner_with_bot
-    from .main import send_push_notification   # import local pour éviter les imports circulaires
+    from .main import send_push_notification
 
     logger.info(f"[BOT] Cycle démarré pour partie #{game_id}")
 
     max_wait_seconds = 25
-    check_interval   = 2
-    waited           = 0
+    check_interval = 2
+    waited = 0
 
     while waited < max_wait_seconds:
         await asyncio.sleep(check_interval)
@@ -298,7 +326,7 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
 
         conn = cursor = None
         try:
-            conn   = get_db_connection()
+            conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
 
             cursor.execute("SELECT status FROM games WHERE id = %s", (game_id,))
@@ -312,9 +340,9 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
                 logger.info(f"[BOT] Partie #{game_id} déjà annulée")
                 return
 
-            # ── Partie déjà active (joueur a rejoint via /api/games/join) ──
             if game_row['status'] == 'active':
-                cursor.close(); conn.close()
+                cursor.close()
+                conn.close()
 
                 joined = bot_join_game(game_id, bet_amount)
                 if joined:
@@ -326,7 +354,6 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
                         'message': 'Un adversaire a rejoint ! La partie commence…'
                     })
 
-                    # ── Push "game_started" à tous les vrais joueurs ──
                     for uid in real_players:
                         asyncio.create_task(send_push_notification(
                             user_id=uid,
@@ -342,9 +369,10 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
                     result = determine_game_winner_with_bot(game_id)
                     if result:
                         await _notify_game_result(game_id, result)
+
+                    _active_bot_game_id = None
                 return
 
-            # ── Vérifier si des joueurs ont rejoint ──
             cursor.execute(
                 "SELECT COUNT(*) as cnt FROM game_participants WHERE game_id = %s",
                 (game_id,)
@@ -353,7 +381,8 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
             participant_count = row['cnt'] if row else 0
 
             if participant_count > 0:
-                cursor.close(); conn.close()
+                cursor.close()
+                conn.close()
 
                 joined = bot_join_game(game_id, bet_amount)
                 if not joined:
@@ -368,7 +397,6 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
                     'message': 'Un adversaire a rejoint ! La partie commence…'
                 })
 
-                # ── Push "game_started" à tous les vrais joueurs ──
                 for uid in real_players:
                     asyncio.create_task(send_push_notification(
                         user_id=uid,
@@ -384,23 +412,27 @@ async def run_bot_game_cycle(game_id: int, bet_amount: float):
                 result = determine_game_winner_with_bot(game_id)
                 if result:
                     await _notify_game_result(game_id, result)
+
+                _active_bot_game_id = None
                 return
 
         except Exception as e:
             logger.error(f"[BOT] Erreur vérification partie #{game_id}: {e}")
         finally:
-            if cursor: cursor.close()
-            if conn:   conn.close()
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
-    # Personne n'a rejoint après 25s → annulation
     logger.info(f"[BOT] Partie #{game_id} annulée (aucun joueur après {max_wait_seconds}s)")
     _cancel_bot_game(game_id, bet_amount)
+    _active_bot_game_id = None
 
 
 def _cancel_bot_game(game_id: int, bet_amount: float):
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("UPDATE games SET status = 'cancelled' WHERE id = %s", (game_id,))
         cursor.execute(
@@ -411,26 +443,21 @@ def _cancel_bot_game(game_id: int, bet_amount: float):
         logger.info(f"[BOT] Partie #{game_id} annulée, remboursement {bet_amount} XOF")
     except Exception as e:
         logger.error(f"[BOT] Erreur _cancel_bot_game: {e}")
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
-# ─────────────────────────────────────────────────────────────
-# Notification de fin de partie + push Firebase
-# ─────────────────────────────────────────────────────────────
 async def _notify_game_result(game_id: int, result: dict):
-    """
-    Notifie chaque participant du résultat via :
-    1. WebSocket (canal partie + canal personnel)
-    2. Notification push Firebase (game_won / game_lost)
-    """
     from .main import send_push_notification
 
     conn = cursor = None
     try:
-        conn   = get_db_connection()
+        conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             "SELECT user_id FROM game_participants WHERE game_id = %s",
@@ -441,41 +468,40 @@ async def _notify_game_result(game_id: int, result: dict):
         logger.error(f"[BOT] Erreur récupération participants: {e}")
         participants = []
     finally:
-        if cursor: cursor.close()
-        if conn:   conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
-    winner_id      = result['winner_id']
+    winner_id = result['winner_id']
     winning_number = result['winning_number']
-    winner_amount  = result['winner_amount']
+    winner_amount = result['winner_amount']
 
     real_participants = [
         p for p in participants if p['user_id'] != PLATFORM_USER_ID
     ]
 
-    # ── 1. Broadcast WebSocket général ───────────────────────
     await manager.broadcast_to_game(game_id, {
-        'type':           'game_ended',
+        'type': 'game_ended',
         'winning_number': winning_number,
-        'winner_id':      winner_id,
-        'winner_amount':  float(winner_amount),
+        'winner_id': winner_id,
+        'winner_amount': float(winner_amount),
         'loser_ids': [
             p['user_id'] for p in real_participants
             if p['user_id'] != winner_id
         ]
     })
 
-    # ── 2. WebSocket personnel + Push Firebase par joueur ────
     for p in real_participants:
-        uid        = p['user_id']
-        is_winner  = (uid == winner_id)
+        uid = p['user_id']
+        is_winner = (uid == winner_id)
 
-        # WebSocket personnel (cross-screen)
         personal_msg = {
-            'type':           'personal_notification',
-            'game_id':        game_id,
-            'is_winner':      is_winner,
+            'type': 'personal_notification',
+            'game_id': game_id,
+            'is_winner': is_winner,
             'winning_number': winning_number,
-            'amount':         float(winner_amount) if is_winner else 0.0,
+            'amount': float(winner_amount) if is_winner else 0.0,
             'message': (
                 f"🎉 Vous avez gagné {winner_amount:.0f} XOF !"
                 if is_winner
@@ -484,16 +510,15 @@ async def _notify_game_result(game_id: int, result: dict):
         }
         await manager.send_to_user(uid, personal_msg)
 
-        # Push Firebase
         if is_winner:
             asyncio.create_task(send_push_notification(
                 user_id=uid,
                 title="🏆 Tu as gagné !",
                 body=f"Félicitations ! Tu remportes {float(winner_amount):,.0f} XOF. Numéro gagnant : {winning_number}.",
                 data={
-                    'type':    'game_won',
+                    'type': 'game_won',
                     'game_id': str(game_id),
-                    'amount':  str(winner_amount),
+                    'amount': str(winner_amount),
                 }
             ))
         else:
@@ -502,7 +527,7 @@ async def _notify_game_result(game_id: int, result: dict):
                 title="😔 Partie perdue",
                 body=f"Le numéro gagnant était {winning_number}. Bonne chance la prochaine fois !",
                 data={
-                    'type':    'game_lost',
+                    'type': 'game_lost',
                     'game_id': str(game_id),
                 }
             ))
@@ -513,13 +538,10 @@ async def _notify_game_result(game_id: int, result: dict):
     )
 
 
-# ─────────────────────────────────────────────────────────────
-# ✅ Tâche de nettoyage automatique en arrière-plan
-# ─────────────────────────────────────────────────────────────
 async def cleanup_scheduler():
     """Tâche asynchrone qui nettoie les parties annulées périodiquement"""
-    logger.info(f"[CLEANUP] Nettoyage automatique activé - suppression après {CLEANUP_INTERVAL_HOURS}h")
-    
+    logger.info(f"[CLEANUP] Nettoyage automatique activé - suppression après {CLEANUP_INTERVAL_MINUTES} minutes")
+
     while True:
         try:
             await asyncio.sleep(CLEANUP_CHECK_INTERVAL)
@@ -528,24 +550,30 @@ async def cleanup_scheduler():
             logger.error(f"[CLEANUP] Erreur: {e}")
 
 
-# ─────────────────────────────────────────────────────────────
-# Scheduler principal
-# ─────────────────────────────────────────────────────────────
 async def bot_scheduler():
+    global _active_bot_game_id
     ensure_platform_user()
     ensure_admin_user()
-    logger.info("[BOT] Scheduler démarré — parties automatiques toutes les 30s")
     
-    # ✅ Démarrer la tâche de nettoyage automatique
+    # ✅ Vider tous les jeux existants au démarrage
+    clear_all_games()
+    
+    logger.info("[BOT] Scheduler démarré — un seul jeu à la fois")
+
     asyncio.create_task(cleanup_scheduler())
 
     while True:
         try:
-            bet_amount = random.choice(BOT_BET_AMOUNTS)
-            game_id    = create_bot_game(bet_amount)
+            # ✅ Ne créer un nouveau jeu que si aucun jeu n'est actif
+            if _active_bot_game_id is None:
+                bet_amount = random.choice(BOT_BET_AMOUNTS)
+                game_id = create_bot_game(bet_amount)
 
-            if game_id:
-                asyncio.create_task(run_bot_game_cycle(game_id, bet_amount))
+                if game_id:
+                    asyncio.create_task(run_bot_game_cycle(game_id, bet_amount))
+            else:
+                logger.info(f"[BOT] Jeu #{_active_bot_game_id} encore actif, attente...")
+                await asyncio.sleep(10)
 
         except Exception as e:
             logger.error(f"[BOT] Erreur scheduler: {e}")
