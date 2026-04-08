@@ -917,6 +917,28 @@ async def start_game_timer(game_id: int):
             winning_number = result['winning_number']
             winner_amount = float(result['winner_amount'])
 
+            # ✅ AJOUTER LE GAIN AU SOLDE DU GAGNANT
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Créditer le gagnant
+            cursor.execute("""
+                UPDATE users 
+                SET balance = balance + %s 
+                WHERE id = %s
+            """, (winner_amount, winner_id))
+            
+            # Enregistrer la transaction de gain
+            cursor.execute("""
+                INSERT INTO transactions (user_id, amount, type, reference, status)
+                VALUES (%s, %s, 'win', %s, 'completed')
+            """, (winner_id, winner_amount, f"game_{game_id}_win"))
+            
+            conn.commit()
+            logger.info(f"💰 Gain crédité: User {winner_id} a reçu {winner_amount} XOF")
+            cursor.close()
+            conn.close()
+
             # Récupérer tous les participants AVEC leur numéro joué
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -936,8 +958,7 @@ async def start_game_timer(game_id: int):
             cursor.close()
             conn.close()
 
-            # ── Broadcast à TOUTE la partie en une seule fois ──
-            # Le front-end détermine lui-même s'il est gagnant ou perdant via winner_id
+            # ── Broadcast à TOUTE la partie ──
             game_end_message = {
                 'type': 'game_ended',
                 'winner_id': winner_id,
@@ -954,7 +975,6 @@ async def start_game_timer(game_id: int):
                 ]
             }
 
-            # Un seul broadcast — tous les joueurs reçoivent tout
             await manager.broadcast_to_game(game_id, game_end_message)
             logger.info(f"✅ game_ended broadcasté à toute la partie {game_id}")
 
@@ -981,6 +1001,8 @@ async def start_game_timer(game_id: int):
 
     except Exception as e:
         logger.error(f"Erreur timer partie {game_id}: {e}")
+
+
 
 
 
