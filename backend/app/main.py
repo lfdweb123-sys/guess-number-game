@@ -1504,6 +1504,38 @@ async def debug_firebase():
         "project_id": os.getenv("FIREBASE_PROJECT_ID"),
         "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
     }
+
+
+# ─────────────────────────────────────────────
+# Test Push Notification
+# ─────────────────────────────────────────────
+@app.post("/api/test-push")
+async def test_push(current_user: dict = Depends(get_current_user)):
+    """Endpoint de test pour les notifications push"""
+    logger.info("=" * 40)
+    logger.info("📱 TEST PUSH NOTIFICATION")
+    logger.info(f"   User ID: {current_user['id']}")
+    logger.info(f"   Username: {current_user['username']}")
+    
+    result = await send_push_notification(
+        user_id=current_user['id'],
+        title="🎮 Test Notification",
+        body="Ceci est un test de notification push avec l'icône de l'application !",
+        data={
+            'type': 'test',
+            'timestamp': str(datetime.now()),
+            'user_id': str(current_user['id'])
+        }
+    )
+    
+    logger.info(f"   Result: {result}")
+    logger.info("=" * 40)
+    
+    return {
+        "success": result,
+        "message": "Notification envoyée avec succès!" if result else "Échec de l'envoi",
+        "user_id": current_user['id']
+    }
     
 # ============================================================
 # SQL — À exécuter UNE SEULE FOIS sur Railway
